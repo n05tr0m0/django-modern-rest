@@ -18,6 +18,45 @@ Later on we will make the API more stable and decrease the amount
 of requirements for an API to count as public.
 
 
+## WIP
+
+### Bugfixes
+
+- Fixes `LeakyBucket` throttling algorithm corner cases, #1044
+
+
+## Version 0.10.0 (2026-05-26)
+
+### Breaking changes
+
+- *Breaking*: `FileResponseSpec()` now describes inline file responses
+  and does not include `Content-Disposition` by default. Use
+  `FileResponseSpec(as_attachment=True)` when returning Django's
+  `FileResponse(..., as_attachment=True)`, #1020
+
+### Migrations prompt
+
+User-facing changes:
+
+```md
+Change all existing ``dmr.files.FileResponseSpec`` usages
+to include ``as_attachment=True`` parameter.
+```
+
+### Features
+
+- Added support for JSON Schema 2020-12 dynamic reference keywords
+  (`$dynamicRef`, `$dynamicAnchor`, `$defs`) in OpenAPI schema generation.
+  These can now be propagated through `extra_json_schema`
+  for generic type definitions, #1039
+
+### Misc
+
+- Use `typing_extensions.Sentinel` for `dmr.types.EMPTY`, #995
+- `pyrefly@1.0` official support, #1015
+- `mypy@2.0` and `mypy@2.1` official support, #1013
+
+
 ## Version 0.9.0 (2026-05-07)
 
 ### Features

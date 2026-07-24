@@ -81,7 +81,7 @@ intersphinx_mapping = {
     'python': ('https://docs.python.org/3/', None),
     'django': ('https://docs.djangoproject.com/en/stable/', None),
     'pydantic': ('https://docs.pydantic.dev/latest/', None),
-    'msgspec': ('https://jcristharif.com/msgspec/', None),
+    'msgspec': ('https://msgspec.dev/', None),
     'jwt': ('https://pyjwt.readthedocs.io/en/latest/', None),
     'typing_extensions': (
         'https://typing-extensions.readthedocs.io/en/stable/',
@@ -144,6 +144,7 @@ nitpick_ignore = [
     (_PY_CLASS, 'dmr.internal.negotiation.ConditionalType'),
     (_PY_CLASS, 'dmr.security.jwt.views._ObtainTokensT'),
     (_PY_CLASS, 'dmr.security.jwt.views._RefreshTokensT'),
+    (_PY_CLASS, 'dmr.security.jwt.views._VerifyTokenT'),
     (_PY_CLASS, 'dmr.security.jwt.views._TokensResponseT'),
     (
         _PY_CLASS,
@@ -192,6 +193,9 @@ nitpick_ignore = [
 
 qualname_overrides = {
     # Django documents these classes under re-exported path names:
+    'django.contrib.auth.base_user.AbstractBaseUser': (
+        'django:django.contrib.auth.models.AbstractBaseUser'
+    ),
     'django.http.request.HttpRequest': 'django:django.http.HttpRequest',
     'django.http.response.HttpResponse': 'django:django.http.HttpResponse',
     'django.http.response.HttpResponseRedirect': (
@@ -292,7 +296,7 @@ def resolve_canonical_names(app: Sphinx, doctree: Node) -> None:
             with the "canonical" directive
         * https://github.com/pyca/cryptography/pull/7938 - where this
             was fixed for cryptography
-        * https://www.sphinx-doc.org/en/master/extdev/appapi.html#events
+        * https://www.sphinx-doc.org/en/master/extdev/event_callbacks.html
         * https://stackoverflow.com/a/62301461 - source of this hack
 
     """

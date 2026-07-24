@@ -1,6 +1,9 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set dotenv-load := false
 
+# Do not update the env, when running
+export UV_NO_SYNC := '1'
+
 # List all available recipes
 _default:
     @just --list --unsorted --list-submodules
@@ -59,6 +62,7 @@ smoke:
     uv run python -c 'from dmr.security import *'
     uv run python -c 'from dmr.security.django_session import *'
     uv run python -c 'from dmr.security.jwt import *'
+    uv run python -c 'from dmr.security.token import *'
     uv run python -c 'from dmr.throttling import *'
     uv run python -c 'from dmr.throttling.backends import *'
     uv run python -c 'from dmr.throttling.algorithms import *'

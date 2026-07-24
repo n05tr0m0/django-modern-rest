@@ -20,9 +20,53 @@ of requirements for an API to count as public.
 
 ## WIP
 
+### Features
+
+- Adds "Opaque Token" auth backend, #1051
+- Added `VerifyTokenSyncController` and `VerifyTokenAsyncController`
+  reusable controllers to verify JWT access tokens, #1129
+
 ### Bugfixes
 
-- Fixes `LeakyBucket` throttling algorithm corner cases, #1044
+- Streaming with `streaming_ping_seconds` no longer leaves the pending
+  ping timer task behind on every produced event, #1046
+- Fixes `500` error on request bodies containing invalid `utf-8` bytes
+  inside `msgspec`'s json and msgpack parsers,
+  now `400` is correctly returned, #1135
+
+
+## Version 0.11.0 (2026-06-27)
+
+In this release we significantly improved the DX of defining common
+auth and throttling types in the settings that could be used
+for both sync and async controllers at the same time.
+
+### Breaking changes
+
+- Dropped macOS [x86_64 wheel support](https://github.com/pyca/cryptography/issues/13520)
+- Dropped Django 4.2 support
+
+### Features
+
+- Added `SyncOrAsyncThrottle` class to apply a single throttle rule
+  to both sync and async endpoints via global settings, #1075
+- Added `SyncOrAsyncAuth` class to apply a single auth rule
+  to both sync and async endpoints via global settings, #1102
+
+### Bugfixes
+
+- Fixed several compatibility issues on older Django 5.x versions, #1096
+- Fixed `LeakyBucket` throttling algorithm corner cases, #1044
+- Fixed OpenAPI schema generation for enum values used
+  in path, query, header, and cookie parameters, #1059
+- Fixed that `dmr.plugins.msgspec.msgpack` cache was not cleared
+  on `clear_settings_cache` calls
+
+### Misc
+
+- Renamed the default OpenAPI title from `Django Modern Rest`
+  to `Your Awesome Project` and documented all `OpenAPIConfig`
+  fields, #1021
 
 
 ## Version 0.10.0 (2026-05-26)

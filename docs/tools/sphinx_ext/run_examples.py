@@ -10,6 +10,7 @@ This module is also allowed to contain AI slop.
 from __future__ import annotations
 
 import ast
+import datetime as dt
 import importlib
 import json
 import logging
@@ -21,11 +22,13 @@ import socket
 import subprocess  # noqa: S404
 import sys
 import time
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager, redirect_stderr, suppress
+from functools import partial
 from pathlib import Path
-from types import ModuleType
-from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeAlias, cast
+from types import MappingProxyType, ModuleType
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal, TypeAlias
 from urllib.parse import urlencode
 
 import django
@@ -35,9 +38,15 @@ import zapros
 from django.conf import settings
 from django.core.handlers.asgi import ASGIHandler
 from django.db import IntegrityError
+from django.http import HttpResponse
 from django.test import override_settings
-from django.urls import URLPattern, clear_url_caches, path
-from django.views import View
+from django.urls import (
+    URLPattern,
+    URLResolver,
+    clear_url_caches,
+    include,
+    path,
+)
 from docutils.nodes import (
     Element,
     General,
@@ -57,7 +66,10 @@ from typing_extensions import override
 from dmr.openapi import OpenAPIConfig
 from dmr.plugins.pydantic import PydanticSerializer
 from dmr.routing import build_404_handler, build_500_handler
+from dmr.security.csrf import build_csrf_handler
 from dmr.settings import Settings, clear_settings_cache
+from dmr.types import EMPTY
+from tools.sphinx_ext.markdown import skip_node
 
 if TYPE_CHECKING:
     from sphinx.writers.html5 import HTML5Translator
@@ -82,6 +94,27 @@ _MP_CONTEXT: Final = _get_mp_context()
 _BASE_DIR: Final = Path(__file__).parent.parent.parent.parent
 
 _PATH_TO_TMP_EXAMPLES: Final = '_build/_tmp_example/'
+_PATH_TO_TEST_TOKEN: Final = '_build/token.txt'  # noqa: S105
+
+#: User that every example with `"populate_db"` can authenticate as.
+_TEST_USERNAME: Final = 'test_user'
+
+#: Templates that `# run:` comments use to ask for real auth tokens.
+_TOKEN_TEMPLATE: Final = '$X_API_TOKEN'  # noqa: S105
+_JWT_ACCESS_TOKEN_TEMPLATE: Final = '$JWT_ACCESS_TOKEN'  # noqa: S105
+_JWT_REFRESH_TOKEN_TEMPLATE: Final = '$JWT_REFRESH_TOKEN'  # noqa: S105
+_CSRF_TOKEN_TEMPLATE: Final = '$CSRF_TOKEN'  # noqa: S105
+
+#: Same defaults our own jwt controllers use.
+_JWT_EXPIRATIONS: Final = MappingProxyType({
+    'access': dt.timedelta(days=1),
+    'refresh': dt.timedelta(days=10),
+})
+
+#: Django compares the `csrftoken` cookie with the `X-CSRFToken` header,
+#: any `CSRF_SECRET_LENGTH` chars of `CSRF_ALLOWED_CHARS` work as both halves.
+_CSRF_TOKEN: Final = 'dmrDocsExampleCsrfTokenValue0001'  # noqa: S105
+
 _RGX_RUN: Final = re.compile(r'# +?run:(.*)')
 _RGX_RUN_COMMENT: Final = re.compile(r'^\s*#\s*run:')
 _RGX_OPENAPI: Final = re.compile(r'# +?openapi:(.*)')
@@ -89,6 +122,9 @@ _RGX_OPENAPI_COMMENT: Final = re.compile(r'^\s*#\s*openapi:')
 
 _AppRunArgs: TypeAlias = dict[str, Any]
 _OpenAPIRunArgs: TypeAlias = dict[str, Any]
+_JWTokenType: TypeAlias = Literal['access', 'refresh']
+_TokenLoader: TypeAlias = Callable[[], str]
+_AnyURLPattern: TypeAlias = URLPattern | URLResolver
 
 logger: Final = logging.getLogger(__name__)
 ignore_missing_output: Final = True
@@ -216,7 +252,7 @@ def _get_available_port() -> int:
         except OSError as error:
             raise _StartupError('Could not find an open port') from error
         else:
-            return cast(int, sock.getsockname()[1])
+            return sock.getsockname()[1]  # type: ignore[no-any-return]
 
 
 def _ensure_project_import_paths() -> None:
@@ -251,15 +287,25 @@ class _BaseBuilder:  # noqa: WPS214
             ROOT_URLCONF='url_conf',
             ALLOWED_HOSTS=['*'],
             DEBUG=False,  # NOTE: this must be `False`
-            SECRET_KEY='dummy-key-for-examples',  # noqa: S106
+            # NOTE: must be at least 32 bytes long, `pyjwt` refuses
+            # to decode `HS256` tokens signed with a shorter key.
+            SECRET_KEY='dummy-key-for-examples-long-enough-for-jwt',  # noqa: S106
             INSTALLED_APPS=[
                 'django.contrib.auth',
                 'django.contrib.sessions',
                 'django.contrib.contenttypes',
                 'dmr',
                 'dmr.security.jwt.blocklist',
+                'dmr.security.token.app',
                 'server.apps.model_simple',
                 'server.apps.model_fk',
+                'server.apps.model_cursor',
+                'server.apps.token_auth',
+                # Needed by the `allauth` auth examples, its headless
+                # views import `allauth.account` models on import:
+                'allauth',
+                'allauth.account',
+                'allauth.headless',
             ],
             MIDDLEWARE=[
                 'django.middleware.security.SecurityMiddleware',
@@ -270,6 +316,7 @@ class _BaseBuilder:  # noqa: WPS214
                 'django.middleware.locale.LocaleMiddleware',
                 'django.contrib.messages.middleware.MessageMiddleware',
                 'django.middleware.clickjacking.XFrameOptionsMiddleware',
+                'allauth.account.middleware.AccountMiddleware',
             ],
             USE_TZ=True,
             USE_I18N=True,
@@ -308,6 +355,11 @@ class _BaseBuilder:  # noqa: WPS214
             # Needed for HTTP Basic auth example:
             HTTP_BASIC_USERNAME='admin',
             HTTP_BASIC_PASSWORD='pass',  # noqa: S106
+            # Needed for CSRF integration example:
+            CSRF_FAILURE_VIEW=build_csrf_handler(
+                'api/',
+                serializer=PydanticSerializer,
+            ),
         )
         django.setup()
 
@@ -317,16 +369,45 @@ class _BaseBuilder:  # noqa: WPS214
             return
 
         from django.core.management.commands import migrate  # noqa: PLC0415
+        from django.db import OperationalError  # noqa: PLC0415
 
-        migrate.Command().run_from_argv(['python', 'run_examples.py'])
+        with suppress(OperationalError):
+            migrate.Command().run_from_argv(['python', 'run_examples.py'])
 
         from django.contrib.auth.models import User  # noqa: PLC0415
 
+        from dmr.security.token.app.models import Token  # noqa: PLC0415
+
         with suppress(IntegrityError):
-            User.objects.create_user(
-                'test_user',
+            user = User.objects.create_user(
+                _TEST_USERNAME,
                 email='test@example.com',
                 password='password',  # noqa: S106
+                is_active=True,
+            )
+
+            _, raw_token = Token.issue(
+                user=user,
+                name='doc-token',
+                expires_at=None,
+            )
+            _StoredToken.store(raw_token)
+
+        # Seeded in the same order as `tests/.../test_cursor_pagination.py`,
+        # so the documented cursors stay stable:
+        from server.apps.model_cursor.models import (  # type: ignore[import-not-found, unused-ignore]  # noqa: PLC0415
+            Entry,
+        )
+
+        if Entry.objects.count() == 0:
+            Entry.objects.bulk_create(
+                [
+                    Entry(rank=1, name='c'),
+                    Entry(rank=2, name='a'),
+                    Entry(rank=3, name='e'),
+                    Entry(rank=4, name='b'),
+                    Entry(rank=5, name='d'),
+                ],
             )
 
         db_populated = True
@@ -343,7 +424,10 @@ class _BaseBuilder:  # noqa: WPS214
 
         return ASGIHandler()
 
-    def _find_controller(self, module: ModuleType) -> View:
+    def _find_controller(
+        self,
+        module: ModuleType,
+    ) -> Callable[..., HttpResponse]:
         controller_name = self.config.get('controller')
         if not controller_name:
             raise RuntimeError(
@@ -351,19 +435,18 @@ class _BaseBuilder:  # noqa: WPS214
                 self.file_path,
                 self.config,
             )
-        controller_cls: View | None = None
         for obj_name in module.__dict__:
             module_obj = getattr(module, obj_name)
-            if hasattr(module_obj, 'as_view') and obj_name == controller_name:
-                controller_cls = module_obj
-                break
+            if obj_name != controller_name:
+                continue
+            if hasattr(module_obj, 'as_view'):
+                return module_obj.as_view()  # type: ignore[no-any-return]
+            assert callable(module_obj), module_obj  # noqa: S101
+            return module_obj  # type: ignore[no-any-return]
 
-        if controller_cls is None:
-            raise RuntimeError(
-                f'Controller {controller_name} not found in {self.file_path}',
-            )
-
-        return controller_cls
+        raise RuntimeError(
+            f'Controller {controller_name} not found in {self.file_path}',
+        )
 
     def _create_urlpatterns(self, module: ModuleType) -> None:
         url_conf_module = ModuleType('url_conf')
@@ -378,18 +461,19 @@ class _BaseBuilder:  # noqa: WPS214
         )
         sys.modules['url_conf'] = url_conf_module
 
-    def _generate_urls(self, module: ModuleType) -> list[URLPattern]:
+    def _generate_urls(self, module: ModuleType) -> list[_AnyURLPattern]:
         clear_url_caches()
 
         if self.config.get('use_urlpatterns', False):
             return module.urlpatterns  # type: ignore[no-any-return]
 
-        controller_cls = self._find_controller(module)
+        controller = self._find_controller(module)
         url_path = _get_route_path_from_run_args(
             self.config,
-        ).lstrip('/')  # noqa: WPS226
+        ).lstrip('/')
         return [
-            path(url_path, controller_cls.as_view()),
+            path(url_path, controller),
+            *_build_named_urls(self.config, controller),
         ]
 
 
@@ -401,7 +485,7 @@ class _OpenAPIBuilder(_BaseBuilder):
     """Builds an OpenAPI application from configuration."""
 
     @override
-    def _generate_urls(self, module: ModuleType) -> list[URLPattern]:
+    def _generate_urls(self, module: ModuleType) -> list[_AnyURLPattern]:
         from dmr.openapi import build_schema  # noqa: PLC0415
         from dmr.openapi.views import OpenAPIJsonView  # noqa: PLC0415
         from dmr.routing import Router  # noqa: PLC0415
@@ -410,15 +494,15 @@ class _OpenAPIBuilder(_BaseBuilder):
         if self.config.get('use_urlpatterns', False):
             return urlpatterns
 
-        controller_cls = self._find_controller(module)
+        controller = self._find_controller(module)
         url_path = _get_route_path_from_run_args(
             self.config,
-        ).lstrip('/')  # noqa: WPS226
+        ).lstrip('/')
 
         router = Router(
             '',
             [
-                path(url_path, controller_cls.as_view()),
+                path(url_path, controller),
             ],
         )
         schema = build_schema(router)
@@ -452,12 +536,55 @@ def _get_route_path_from_run_args(run_args: _AppRunArgs) -> str:
     return _get_url_path_from_run_args(run_args)
 
 
+def _build_named_urls(
+    run_args: _AppRunArgs,
+    controller: Callable[..., HttpResponse],
+) -> list[_AnyURLPattern]:
+    """
+    Register the named routes that `"url_names"` asks for.
+
+    Cookie controllers scope their refresh cookie with
+    `reverse_lazy('api:jwt_refresh')`, which needs that name to resolve.
+    A single-controller example has no such route, so the names listed
+    here are served by the very same controller, and only the one
+    under `"url"` is ever requested.
+    """
+    named_urls = run_args.get('url_names', {})
+    if not named_urls:
+        return []
+
+    namespaces = {full_name.rpartition(':')[0] for full_name in named_urls}
+    assert len(namespaces) == 1, (  # noqa: S101
+        f'All `url_names` must share one namespace, got {namespaces}'
+    )
+
+    urlpatterns = [
+        path(
+            named_path.lstrip('/'),
+            controller,
+            name=full_name.rpartition(':')[2],
+        )
+        for full_name, named_path in named_urls.items()
+    ]
+    return _wrap_in_namespace(urlpatterns, namespaces.pop())
+
+
+def _wrap_in_namespace(
+    urlpatterns: list[URLPattern],
+    namespace: str,
+) -> list[_AnyURLPattern]:
+    """Mount *urlpatterns* under *namespace*, so `'api:name'` reverses."""
+    if not namespace:
+        return list(urlpatterns)
+    return [path('', include((urlpatterns, namespace), namespace=namespace))]
+
+
 @contextmanager
 def _run_app(
     path: Path,
     config: _AppRunArgs,
     builder: type[_BaseBuilder],
-) -> Iterator[int]:
+) -> Generator[int]:
     """Start a Django app on an available port."""
     restart_duration = 0.2
     port = _get_available_port()
@@ -485,7 +612,7 @@ def _run_app(
         finally:
             _shutdown_process(proc)
         return
-    raise _StartupError(str(path))
+    raise _StartupError('Cannot find free port', str(path), config)
 
 
 def _run_app_worker(
@@ -512,6 +639,11 @@ def _shutdown_process(proc: multiprocessing.Process) -> None:
 
 def _get_module_name(file_path: Path) -> str:
     return str(file_path.with_suffix('')).replace(os.sep, '.')
+
+
+def _resolve_docs_dir() -> Path:
+    cwd = Path.cwd()
+    return cwd if cwd.name == 'docs' else cwd / 'docs'
 
 
 def _resolve_tmp_example_relative_path(
@@ -618,7 +750,7 @@ def _extract_comment_config(
     if '# noqa' in run_stmt:
         run_stmt = run_stmt.split('# noqa')[0]
     try:
-        return cast(dict[str, Any], json.loads(run_stmt))
+        return json.loads(run_stmt)  # type: ignore[no-any-return]
     except Exception as exc:
         raise _StartupError(
             f'Cannot parse {config_type} in {file_path!s}',
@@ -646,10 +778,14 @@ def _exec_examples(app_file: Path, run_configs: list[_AppRunArgs]) -> str:  # no
             if example_result:
                 example_results.append(example_result)
 
-    from django.core.cache import caches  # noqa: PLC0415
+    # Examples that only declare `# openapi:` have no run configs at all,
+    # so nothing above configured the settings for us.
+    # Touching `caches` before that raises `ImproperlyConfigured`.
+    if settings.configured:
+        from django.core.cache import caches  # noqa: PLC0415
 
-    for cache in caches.all():
-        cache.clear()
+        for cache in caches.all():
+            cache.clear()
 
     return '\n\n'.join(example_results)
 
@@ -661,7 +797,12 @@ def _exec_openapi_examples(
     openapi_results = []
 
     for openapi_args in openapi_configs:
-        url_path = cast(str, openapi_args['openapi_url'])
+        url_path: str = openapi_args['openapi_url']
+        # Settings must already be configured before `override_settings`
+        # wraps them. Otherwise it wraps an unconfigured lazy object,
+        # and `_configure_settings()` inside `_run_app` sees
+        # `settings.configured` as `True` and silently does nothing.
+        _OpenAPIBuilder(app_file, openapi_args)._configure_settings()  # noqa: SLF001
         with (
             override_settings(
                 DMR_SETTINGS={
@@ -672,6 +813,7 @@ def _exec_openapi_examples(
                     ),
                     Settings.openapi_examples_seed: openapi_args.get(
                         'openapi_examples_seed',
+                        EMPTY,
                     ),
                 },
             ),
@@ -786,7 +928,9 @@ def _create_openapi_admonition(result_content: str) -> Node:
         '',
         title('', 'OpenAPI Schema'),
         result_toggle,
-        classes=['hint'],
+        # The generated schema is large and follows from the example code,
+        # it is left out of the Markdown output to save LLMs tokens:
+        classes=['hint', 'llm-friendly-exclude'],
     )
 
 
@@ -803,6 +947,7 @@ def _build_curl_request(
     query = run_args.pop('query', '')
     if query and not query.startswith('?'):
         raise ValueError(f'{query!r} must start with "?"')
+
     args = [
         'curl',
         '-v',
@@ -852,6 +997,7 @@ def _add_body_and_content_type(  # noqa: C901, WPS210, WPS213, WPS231
     if 'body' not in run_args:
         return
 
+    run_args['body'] = _substitute_tokens(run_args['body'])
     content_type = run_args.get('headers', {}).get(
         'Content-Type',
         None,
@@ -908,6 +1054,8 @@ def _add_headers(
     if isinstance(headers, dict):
         headers = headers.items()
     for header_name, header_value in headers:
+        header_value = _substitute_tokens(header_value)
+
         args.extend([header_flag, f'{header_name}: {header_value}'])
         clean_args.extend([header_flag, f'{header_name}: {header_value}'])
 
@@ -921,8 +1069,104 @@ def _add_cookies(
 
     cookies = run_args.get('cookies', {})
     for cookie_name, cookie_value in cookies.items():
+        cookie_value = _substitute_tokens(cookie_value)
+
         args.extend([cookie_flag, f'{cookie_name}={cookie_value}'])
         clean_args.extend([cookie_flag, f'{cookie_name}={cookie_value}'])
+
+
+class _StoredToken:
+    """Opaque token of the example user, it only exists as a db row."""
+
+    @classmethod
+    def store(cls, token: str) -> None:
+        cls._resolve_path().write_text(token)
+
+    @classmethod
+    def load(cls) -> str:
+        from dmr.security.token.app.models import Token  # noqa: PLC0415
+
+        path = cls._resolve_path()
+        assert path.exists(), f'{_PATH_TO_TEST_TOKEN} does not exist'  # noqa: S101
+        token = path.read_text().strip()
+
+        assert Token.find_raw(token), f'Token {token!r} is not found'  # noqa: S101
+        return token
+
+    @classmethod
+    def _resolve_path(cls) -> Path:
+        return _resolve_docs_dir() / _PATH_TO_TEST_TOKEN
+
+
+class _IssuedJWTokens:
+    """
+    Access and refresh jwt tokens of the example user.
+
+    Unlike :class:`_StoredToken`, jwt tokens are not stored anywhere:
+    they just have to be signed with our secret and to point
+    at an existing user. So, there is no file to read them back from,
+    we sign a new one every time an example asks.
+
+    Every token also gets its own `jti`, which keeps the examples
+    independent: `jwt_cookie_logout_blocklist.py` blocklists the token
+    it is given, and that must not reach any other example.
+    """
+
+    @classmethod
+    def load(cls, token_type: _JWTokenType) -> str:
+        return cls._issue(token_type, _JWT_EXPIRATIONS[token_type])
+
+    @classmethod
+    def _issue(cls, token_type: _JWTokenType, expires_in: dt.timedelta) -> str:
+        from django.contrib.auth.models import User  # noqa: PLC0415
+
+        from dmr.security.jwt.token import JWToken  # noqa: PLC0415
+
+        user = User.objects.filter(username=_TEST_USERNAME).first()
+        assert user is not None, (  # noqa: S101
+            f'User {_TEST_USERNAME!r} is not found, '
+            'jwt examples require "populate_db"'
+        )
+        return JWToken(
+            sub=str(user.pk),
+            exp=dt.datetime.now(dt.UTC) + expires_in,
+            # Blocklist mixins reject tokens without a `jti` claim:
+            jti=uuid.uuid4().hex,
+            extras={'type': token_type},
+        ).encode(secret=settings.SECRET_KEY, algorithm='HS256')
+
+
+#: What each template in a `# run:` comment is replaced with.
+_TOKEN_TEMPLATES: Final[Mapping[str, _TokenLoader]] = MappingProxyType({
+    _TOKEN_TEMPLATE: _StoredToken.load,
+    _JWT_ACCESS_TOKEN_TEMPLATE: partial(_IssuedJWTokens.load, 'access'),
+    _JWT_REFRESH_TOKEN_TEMPLATE: partial(_IssuedJWTokens.load, 'refresh'),
+    _CSRF_TOKEN_TEMPLATE: lambda: _CSRF_TOKEN,
+})
+
+
+def _substitute_tokens(raw_value: Any) -> Any:
+    """
+    Replace every token template in *raw_value* with a real token.
+
+    Headers and cookies pass their values here, request bodies pass
+    whole json structures, so anything that is not a string
+    is either walked into or returned as-is.
+    """
+    if isinstance(raw_value, dict):
+        return {
+            raw_key: _substitute_tokens(raw_item)
+            for raw_key, raw_item in raw_value.items()
+        }
+    if isinstance(raw_value, list):
+        return [_substitute_tokens(raw_item) for raw_item in raw_value]
+    if not isinstance(raw_value, str):
+        return raw_value
+
+    for template, load_token in _TOKEN_TEMPLATES.items():
+        if template in raw_value:
+            raw_value = raw_value.replace(template, load_token())
+    return raw_value
 
 
 def _find_imports_block_end_line(file_content: str) -> int:
@@ -1071,7 +1315,7 @@ class LiteralInclude(_LiteralInclude):  # noqa: WPS214
         first_node = rendered_nodes[0]
 
         if self._is_literal_block_wrapper(first_node):
-            wrapper_node = cast(container, first_node)
+            wrapper_node: container = first_node  # type: ignore[assignment]
             self._add_wrapper_class(wrapper_node, 'imports-inline-enabled')
             self._insert_spoiler_before_literal_block(
                 wrapper_node,
@@ -1202,7 +1446,7 @@ class LiteralInclude(_LiteralInclude):  # noqa: WPS214
 
         first_node = rendered_nodes[0]
         if self._is_literal_block_wrapper(first_node):
-            wrapper_node = cast(container, first_node)
+            wrapper_node: container = first_node  # type: ignore[assignment]
             self._add_wrapper_class(wrapper_node, 'github-link-enabled')
             self._insert_source_link(
                 wrapper_node,
@@ -1262,8 +1506,7 @@ class LiteralInclude(_LiteralInclude):  # noqa: WPS214
         file_path: Path,
         clean_content: str,
     ) -> None:
-        cwd = Path.cwd()
-        docs_dir = cwd if cwd.name == 'docs' else cwd / 'docs'
+        docs_dir = _resolve_docs_dir()
         relative_example_path = _resolve_tmp_example_relative_path(
             file_path,
             docs_dir,
@@ -1282,9 +1525,12 @@ def setup(app: Sphinx) -> None:
     """Register Sphinx extension directives."""
     tmp_examples_path = Path.cwd() / _PATH_TO_TMP_EXAMPLES
     tmp_examples_path.mkdir(exist_ok=True, parents=True)
+    # In Markdown, imports are shown in full, and the example code
+    # is already there, so there is nothing to toggle or to link to:
     app.add_node(
         _ImportsSpoiler,
         html=(_visit_imports_spoiler, _depart_imports_spoiler),
+        llm_markdown=(skip_node, None),
     )
     app.add_node(
         _ImportsSpoilerSummary,
@@ -1296,6 +1542,7 @@ def setup(app: Sphinx) -> None:
     app.add_node(
         _GithubSourceLink,
         html=(_visit_github_source_link, _depart_github_source_link),
+        llm_markdown=(skip_node, None),
     )
     app.add_node(
         _OpenAPIResultToggle,

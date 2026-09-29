@@ -28,24 +28,37 @@
 # SOFTWARE.
 
 import dataclasses
+import datetime as dt
 from collections.abc import Mapping
 from http.cookies import Morsel, SimpleCookie
-from typing import Any, ClassVar, Literal, final
+from typing import (
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    TypeAlias,
+    final,
+)
 
 from django.http import HttpResponseBase
+
+from dmr.internal.types import StrOrPromise
+
+#: Type alias for possible `samesite` values.
+SameSite: TypeAlias = Literal['lax', 'strict', 'none']
 
 
 @dataclasses.dataclass(frozen=True, slots=True, kw_only=True)
 class _BaseCookie:
     """Base class for all cookies."""
 
-    path: str = '/'
+    path: StrOrPromise = '/'
     max_age: int | None = None
-    expires: int | None = None
+    expires: int | dt.datetime | None = None
     domain: str | None = None
-    secure: bool | None = None
-    httponly: bool | None = None
-    samesite: Literal['lax', 'strict', 'none'] = 'lax'
+    secure: bool = False
+    httponly: bool = False
+    samesite: SameSite = 'lax'
 
 
 @final
@@ -57,6 +70,8 @@ class CookieSpec(_BaseCookie):
     Attributes:
         path: Path fragment that must exist in the request
             url for the cookie to be valid. Defaults to ``/``.
+            Can be a lazy string, so a cookie can be scoped
+            to a :func:`django.urls.reverse_lazy` url.
         max_age: Maximal age of the cookie before its invalidated.
         expires: Seconds from now until the cookie expires.
         domain: Domain for which the cookie is valid.
@@ -82,16 +97,9 @@ class CookieSpec(_BaseCookie):
 
     """
 
-    #: This fields are not a part of the `cookie` spec:
-    _extra_fields: ClassVar[frozenset[str]] = frozenset((
-        'description',
-        'required',
-        'skip_validation',
-    ))
-
     is_actionable: ClassVar[Literal[False]] = False
 
-    description: str | None = None
+    description: StrOrPromise | None = None
     required: bool = True
     skip_validation: bool = False
 
@@ -102,21 +110,38 @@ class CookieSpec(_BaseCookie):
         cookie[other.key] = other.value
 
         namespace = cookie[other.key]
-        for field in dataclasses.fields(self):
-            if field.name in self._extra_fields:
-                continue
-            if field.name == 'expires':
-                # It is relative to the current time, can't check it.
-                namespace[field.name] = other[field.name]
-                continue
-            field_name = 'max-age' if field.name == 'max_age' else field.name
-            namespace[field_name] = getattr(self, field.name) or ''
+        for field in _COOKIE_SPEC_FIELDS:
+            field_name, field_value = self._morsel_field(field, other)
+            namespace[field_name] = field_value
 
         return cookie[other.key] == other
 
     def to_spec(self) -> 'CookieSpec':
         """API for compatibility with ``NewCookie``."""
         return self
+
+    def _morsel_field(
+        self,
+        field_name: str,
+        other: Morsel[str],
+    ) -> tuple[str, Any]:
+        if field_name == 'expires':
+            # It is relative to the current time, can't check it.
+            return field_name, other[field_name]
+        if field_name == 'max_age':
+            # `0` is a real value here: it tells the browser to drop
+            # the cookie right away. So, unlike all the other fields,
+            # we cannot treat it as a missing one.
+            return 'max-age', '' if self.max_age is None else self.max_age
+        return field_name, getattr(self, field_name) or ''
+
+
+#: We use module level fields not to calculate them each time.
+_COOKIE_SPEC_FIELDS: Final = frozenset(
+    field.name
+    for field in dataclasses.fields(CookieSpec)
+    if field.name not in {'description', 'required', 'skip_validation'}
+)
 
 
 @final
@@ -129,6 +154,8 @@ class NewCookie(_BaseCookie):
         value: Value for the cookie.
         path: Path fragment that must exist in the request
             url for the cookie to be valid. Defaults to ``/``.
+            Can be a lazy string, so a cookie can be scoped
+            to a :func:`django.urls.reverse_lazy` url.
         max_age: Maximal age of the cookie before its invalidated.
         expires: Seconds from now until the cookie expires.
         domain: Domain for which the cookie is valid.
@@ -148,22 +175,58 @@ class NewCookie(_BaseCookie):
 
     value: str  # noqa: WPS110
 
+    @classmethod
+    def from_spec(cls, spec: CookieSpec, *, value: str) -> 'NewCookie':  # noqa: WPS110
+        """
+        Create a cookie with *value* that matches the given *spec*.
+
+        Use it when the cookie is described by ``@validate``,
+        but its value is only known in runtime.
+        Copying the flags by hand would mean two places to keep in sync,
+        and a response cookie that does not match its spec
+        is a validation error.
+
+        .. versionadded:: 0.15.0
+        """
+        return cls(
+            value=value,
+            path=spec.path,
+            max_age=spec.max_age,
+            expires=spec.expires,
+            domain=spec.domain,
+            secure=spec.secure,
+            httponly=spec.httponly,
+            samesite=spec.samesite,
+        )
+
     def to_spec(self) -> CookieSpec:
         """Converts the modification to spec."""
-        namespace = dataclasses.asdict(self)
-        namespace.pop('value')
-        return CookieSpec(**namespace)
-
-    def as_dict(self) -> dict[str, Any]:
-        """Converts to a dictionary ."""
-        return dataclasses.asdict(self)
+        return CookieSpec(
+            path=self.path,
+            max_age=self.max_age,
+            expires=self.expires,
+            domain=self.domain,
+            secure=self.secure,
+            httponly=self.httponly,
+            samesite=self.samesite,
+        )
 
 
 def set_cookies(
     response: HttpResponseBase,
-    cookies: Mapping[str, NewCookie] | None,
+    cookies: Mapping[str, NewCookie],
 ) -> None:
     """Set cookies for the HTTP response."""
-    if cookies:
-        for cookie_key, cookie in cookies.items():
-            response.set_cookie(cookie_key, **cookie.as_dict())
+    for cookie_key, cookie in cookies.items():
+        # TODO: fix stubs for `set_cookie` in `django-stubs`
+        response.set_cookie(
+            cookie_key,
+            path=str(cookie.path),
+            max_age=cookie.max_age,
+            expires=cookie.expires,  # type: ignore[arg-type]
+            domain=cookie.domain,
+            secure=cookie.secure,
+            httponly=cookie.httponly,
+            samesite=cookie.samesite,  # type: ignore[arg-type]
+            value=cookie.value,
+        )

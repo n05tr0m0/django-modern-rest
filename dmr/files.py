@@ -1,3 +1,4 @@
+import abc
 import dataclasses
 from collections.abc import Mapping
 from http import HTTPStatus
@@ -16,13 +17,13 @@ from dmr.openapi.objects import (
     MediaTypeMetadata,
     OpenAPIFormat,
     OpenAPIType,
-    Reference,
     Response,
     Schema,
 )
 from dmr.parsers import Parser
 
 if TYPE_CHECKING:
+    from dmr.controller import Controller
     from dmr.serializer import BaseSerializer
 
 
@@ -41,58 +42,97 @@ def file_response_headers(
     return response_headers
 
 
-@dataclasses.dataclass(slots=True, frozen=True)
-class FileBody:
-    """Special type that indicates that response returns a file body."""
+class FileBodyLike:
+    """
+    Interface that describes objects that can return media type schema.
+
+    .. versionadded:: 0.15.0
+    """
+
+    __slots__ = ()
 
     @classmethod
-    def media_type(
+    @abc.abstractmethod
+    def media_type(  # noqa: WPS211
         cls,
-        schema: Schema | Reference,
+        schema: Schema,
         model: Any,
         model_meta: tuple[Any, ...],
+        metadata: EndpointMetadata,
+        controller_cls: type['Controller[BaseSerializer]'],
         parser: Parser,
-        context: 'OpenAPIContext',
+        context: OpenAPIContext,
+    ) -> MediaType:
+        """
+        Provides file request schema for this parser.
+
+        .. versionchanged:: 0.16.0
+            Now accepts *metadata* and *controller_cls* parameters.
+
+        """
+        raise NotImplementedError
+
+    @classmethod
+    @abc.abstractmethod
+    def get_schema(
+        cls,
+        schema: Schema,
+        context: OpenAPIContext,
+    ) -> Schema:
+        """Return the OpenAPI schema for this file body."""
+        raise NotImplementedError
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class FileBody(FileBodyLike):
+    """Special type that indicates that response returns a file body."""
+
+    @override
+    @classmethod
+    def media_type(  # noqa: WPS211
+        cls,
+        schema: Schema,
+        model: Any,
+        model_meta: tuple[Any, ...],
+        metadata: EndpointMetadata,
+        controller_cls: type['Controller[BaseSerializer]'],
+        parser: Parser,
+        context: OpenAPIContext,
     ) -> MediaType:
         """Returns the media type for the given file."""
-        schema = context.registries.schema.maybe_resolve_reference(schema)
-        schema = dataclasses.replace(
-            schema,
-            properties={
-                property_name: cls.get_schema(second, context)
-                for property_name, second in (schema.properties or {}).items()
-            },
-        )
+        schema = cls.replace_schema(schema, context)
         conditional_models = get_conditional_types(model, model_meta) or {}
         media_type_meta = (
             get_annotated_metadata(
                 conditional_models.get(parser.content_type, model),
-                model_meta,
                 MediaTypeMetadata,
+                model_meta=model_meta,
             )
             or MediaTypeMetadata()
         )
         return MediaType(
             schema=schema,
-            encoding=media_type_meta.encoding or cls.encoding(model, schema),
+            description=media_type_meta.description,
+            encoding=media_type_meta.encoding or cls._encoding(model, schema),
             example=media_type_meta.example,
             examples=media_type_meta.examples,
             item_encoding=media_type_meta.item_encoding,
             prefix_encoding=media_type_meta.prefix_encoding,
         )
 
+    @override
     @classmethod
     def get_schema(
         cls,
-        schema: Schema | Reference,
-        context: 'OpenAPIContext',
+        schema: Schema,
+        context: OpenAPIContext,
     ) -> Schema:
         """Returns the openapi schema that this object represents."""
         file_schema = Schema(
             type=OpenAPIType.STRING,
             format=OpenAPIFormat.BINARY,
         )
-        if isinstance(schema, Schema) and schema.type == OpenAPIType.ARRAY:
+        if schema.type == OpenAPIType.ARRAY:
             return Schema(
                 type=OpenAPIType.ARRAY,
                 format=schema.format,
@@ -101,7 +141,51 @@ class FileBody:
         return file_schema
 
     @classmethod
-    def encoding(
+    def replace_schema(
+        cls,
+        schema: Schema,
+        context: OpenAPIContext,
+    ) -> Schema:
+        """
+        Replaces existing generated schema with file-like schema.
+
+        Here the most tricky part happens. When we define
+        ``FileMetadata[Info]`` as a model to parse, we don't want
+        to expose ``Info`` as a model actually, we want to show
+        that this is a file in the OpenAPI schema. So, we place known models
+        with the file specification here.
+
+        Unions like ``Model | None`` have their members replaced.
+
+        .. versionadded:: 0.15.0
+        """
+        schema = context.registries.schema.maybe_resolve_reference(schema)
+        return dataclasses.replace(
+            schema,
+            properties=(
+                None
+                if schema.properties is None
+                else {
+                    property_name: cls.get_schema(second, context)
+                    for property_name, second in schema.properties.items()
+                }
+            ),
+            any_of=cls._replace_members(schema.any_of, context),
+            one_of=cls._replace_members(schema.one_of, context),
+        )
+
+    @classmethod
+    def _replace_members(
+        cls,
+        members: list[Schema] | None,
+        context: OpenAPIContext,
+    ) -> list[Schema] | None:
+        if not members:
+            return members
+        return [cls.replace_schema(member, context) for member in members]
+
+    @classmethod
+    def _encoding(
         cls,
         model: Any,
         schema: Schema,
@@ -119,10 +203,14 @@ class FileResponseSpec(ResponseSpec):
     """
     Special :class:`~dmr.metadata.ResponseSpec` subclass for files.
 
+    Unlike regular ``ResponspeSpec`` that will create
+    a real schema for the return type, here we force
+    to use :class:`dmr.files.FileBodyLike` schema providers,
+    that know how files will look like in the final schema.
+
     Attributes:
         as_attachment: Marks responses with ``Content-Disposition`` header
             as required. Use together with ``FileResponse(as_attachment=True)``.
-        file_body: Model to be used for file body schema generation.
 
     .. versionchanged:: 0.10.0
         Added ``as_attachment`` parameter that can mark files
@@ -130,9 +218,13 @@ class FileResponseSpec(ResponseSpec):
         Similar to Django's ``as_attachment`` parameter
         in :class:`django.http.FileResponse`.
 
+    .. versionchanged:: 0.15.0
+        Removed ``file_body`` attribute, now using ``return_type`` instead
+        to generate the response schema.
+
     """
 
-    return_type: type[FileBody] = FileBody
+    return_type: type[FileBodyLike] = FileBody
     status_code: HTTPStatus = dataclasses.field(
         kw_only=True,
         default=HTTPStatus.OK,
@@ -142,10 +234,6 @@ class FileResponseSpec(ResponseSpec):
         default=None,
     )
     as_attachment: bool = dataclasses.field(kw_only=True, default=False)
-    file_body: type[FileBody] = dataclasses.field(
-        kw_only=True,
-        default=FileBody,
-    )
 
     @override
     def __post_init__(self) -> None:
@@ -164,18 +252,15 @@ class FileResponseSpec(ResponseSpec):
     def get_schema(
         self,
         metadata: EndpointMetadata,
-        serializer: type['BaseSerializer'],
+        controller_cls: type['Controller[BaseSerializer]'],
         context: OpenAPIContext,
     ) -> Response:
         """Customize schema for the file response."""
-        response = ResponseSpec.get_schema(self, metadata, serializer, context)
-        # We know that we return files:
-        for media in (response.content or {}).values():
-            # for mypy: it can't be `None` here
-            assert media.schema  # noqa: S101
-            media.schema = self.file_body.get_schema(Schema(), context)
-        # We know that `FileBody` was a fake model, remove it:
-        context.registries.schema.try_unregister(
-            serializer.schema_generator.schema_name(self.file_body),
+        # We know that we return files, `FileBody` is not a real model:
+        return context.generators.response.get_schema(
+            self,
+            metadata,
+            controller_cls,
+            context,
+            content_schema=self.return_type.get_schema(Schema(), context),
         )
-        return response

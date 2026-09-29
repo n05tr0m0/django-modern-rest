@@ -21,7 +21,7 @@ class Command(BaseCommand):
 
     @override
     def add_arguments(self, parser: CommandParser) -> None:
-        """Add schema, format, indent, and sort-keys arguments."""
+        """Add schema, format, validation, indent, and sort-keys arguments."""
         parser.add_argument(
             'schema',
             help='Import path to the OpenAPI schema.',
@@ -37,7 +37,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--indent',
             type=int,
-            default=0,
+            default=None,
             dest='indent',
             help=(
                 'How many spaces we should use for pretty print indentation. '
@@ -58,6 +58,13 @@ class Command(BaseCommand):
             dest='no_ensure_ascii',
             help='Should we properly escape all non-ascii symbols.',
         )
+        parser.add_argument(
+            '--skip-validation',
+            action='store_true',
+            default=False,
+            dest='skip_validation',
+            help='Skip schema validation before exporting.',
+        )
 
     @override
     def handle(self, *args: Any, **options: Any) -> None:  # noqa: WPS110
@@ -66,7 +73,7 @@ class Command(BaseCommand):
 
         converted_schema = import_string(
             schema_path.replace(':', '.'),
-        ).convert()
+        ).convert(skip_validation=options['skip_validation'])
 
         if options['format'] == 'yaml':
             try:
@@ -86,6 +93,9 @@ class Command(BaseCommand):
             )
         else:
             self.stdout.write(
+                # We don't use `msgspec` here, because it is a single operation
+                # and it might require extra spacing / indentation
+                # which `msgspec` can't really do.
                 json.dumps(
                     converted_schema,
                     indent=options['indent'],

@@ -8,12 +8,21 @@ from inline_snapshot import snapshot
 
 from dmr import Controller, modify
 from dmr.plugins.pydantic import PydanticFastSerializer
-from dmr.test import DMRAsyncRequestFactory, DMRRequestFactory
+from dmr.test import DMRAsyncRequestFactory, DMRRequestFactory, assert_throttled
 from dmr.throttling import AsyncThrottle, Rate, SyncThrottle
+from dmr.throttling.backends import AsyncDjangoCache, SyncDjangoCache
 
 
 class _SyncEndpointController(Controller[PydanticFastSerializer]):
-    @modify(throttling=[SyncThrottle(1, Rate.hour)])
+    @modify(
+        throttling=[
+            SyncThrottle(
+                1,
+                Rate.hour,
+                backend=SyncDjangoCache(allow_unsafe_cache=None),
+            ),
+        ],
+    )
     def get(self) -> str:
         return 'inside'
 
@@ -47,10 +56,17 @@ def test_throttle_sync_real_time(
     assert json.loads(response.content) == snapshot({
         'detail': [{'msg': 'Too many requests', 'type': 'ratelimit'}],
     })
+    assert_throttled(response)
 
 
 class _AsyncController(Controller[PydanticFastSerializer]):
-    throttling = [AsyncThrottle(1, Rate.hour)]
+    throttling = [
+        AsyncThrottle(
+            1,
+            Rate.hour,
+            backend=AsyncDjangoCache(allow_unsafe_cache=None),
+        ),
+    ]
 
     async def get(self) -> str:
         return 'inside'
@@ -86,3 +102,4 @@ async def test_throttle_async_per_controller(
     assert json.loads(response.content) == snapshot({
         'detail': [{'msg': 'Too many requests', 'type': 'ratelimit'}],
     })
+    assert_throttled(response)

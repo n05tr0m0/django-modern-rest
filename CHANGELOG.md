@@ -1,6 +1,6 @@
 # Version history
 
-We will follow [Semantic Versions](https://semver.org/) since ``1.0.0`` release.
+We will follow [Semantic Versions](https://semver.org/) since `1.0.0` release.
 While in `Development Status :: 3 - Alpha` - we will break
 all the things without any notices.
 
@@ -17,22 +17,857 @@ What is a public API for us (all criteria must be met)?
 Later on we will make the API more stable and decrease the amount
 of requirements for an API to count as public.
 
+All migration prompts since `0.13.0` release
+are stored as descriptions in version releases on GitHub, example:
+https://github.com/wemake-services/django-modern-rest/releases/tag/0.13.0
 
-## WIP
+Prompts of the three latest breaking releases also live in the
+[`dmr-upgrade`](https://github.com/wemake-services/django-modern-rest/tree/master/dmr/.agents/skills/dmr-upgrade) agent skill,
+ask your coding agent to use `$dmr-upgrade` to upgrade a project.
+
+
+## 0.16.0 WIP
+
+### Breaking changes
+
+- `Components.path_items` is now typed as `dict[str, PathItem] | None`.
+  The spec only allows Path Item Objects there, `Reference` objects
+  are not permitted, #1491
+- Reworked how OpenAPI schema components are registered.
+  `SchemaGenerator.__call__` lost `skip_registration`
+  and `register_referenced_components` parameters,
+  use `SchemaGenerator.load` to get a schema with its components
+  kept locally, and `SchemaGenerator.register` to register
+  only the components that the final result references.
+  Removed `SchemaRegistry.try_unregister` and the unused
+  `dmr.openapi.core.registry.SchemaCallback` protocol.
+  `ResponseGenerator.get_schema` accepts `content_schema`
+  to skip generating a schema from the return type,
+  `FileResponseSpec` uses it instead of removing `FileBody` afterwards, #1647
+- `auth`, `throttling`, `parsers`, `renderers`, `responses`, `tags`,
+  `exclude_validate_responses`, `exclude_semantic_responses`,
+  and `no_validate_http_spec` are not merged anymore
+  from settings, router, controller, and endpoint levels.
+  Now, endpoint values override controller values,
+  controller values override settings values.
+  Merging is still possible, but it must be explicit,
+  like `@modify(auth=[*auth, other_auth])`,
+  or customized with `Controller.metadata_merger_cls`.
+  This allows a better composition and better value overrides, #1576
+- All endpoint, controller, and settings values now default to `EMPTY`,
+  which means "not set on this level", instead of `None`.
+  `None` is only allowed where it disables something explicitly,
+  like `auth=None`. This affects `validate_responses`, `semantic_responses`,
+  `validate_events`, `validate_negotiation`, `ignore_from_spec`,
+  `error_handler`, `status_code`, `headers`, `cookies`, `operation_id`,
+  `external_docs`, `callbacks`, `servers`, `links`, `response_description`,
+  and `Settings.openapi_examples_seed`, #1576
+- `Controller` now sets `login_required = False` by default in order to
+  exempt controllers from Django's `LoginRequiredMiddleware`.
+  Users should [configure authentication](https://django-modern-rest.readthedocs.io/en/latest/pages/auth/common.html)
+  in `django-modern-rest` for controllers, #1551
+- `Controller.as_view` now raises `EndpointMetadataError`
+  when it is called on an abstract controller: one without
+  an exact serializer type or without any endpoints.
+  Previously such controllers could be added to `Router`
+  and to `urlpatterns` silently, but they could not serve
+  any requests, #1445
+- `OpenAPIConfig` now raises `ValueError` for `openapi_version` below `3.1.0`.
+  OpenAPI `3.0.x` was never really supported: it predates JSON Schema,
+  which is what `pydantic` and `msgspec` generate for our models, #1435
+- Removed OpenAPI `3.0` style `Reference` objects from schema positions, #1648
+- `summary` and `description` of `@modify` and `@validate` are now resolved
+  one at a time. Passing just one of them used to drop the endpoint's
+  docstring entirely, now the other one is still parsed from it.
+  They also default to `EMPTY` instead of `None`, so passing `None`
+  explicitly now means "generate nothing" instead of "use the docstring", #1446
+- Renamed `dmr.streaming.metadata.StreamResponseModification`
+  to `StreamingResponseModification`, #1456
+- Removed `dmr.validation.response.ValidatedModification`,
+  it is not needed anymore, #1456
+- Removed `build_headers`, `actionable_headers`, `actionable_cookies`,
+  `infer_return_type` methods from `dmr.metadata.ResponseModification`, #1456
+- Removed `Settings.throttling_allow_unsafe_cache`, the
+  `throttling_allow_unsafe_cache` controller attribute and endpoint parameter,
+  and `EndpointMetadata.throttling_allow_unsafe_cache`.
+  Use `allow_unsafe_cache` parameter of `SyncDjangoCache`
+  and `AsyncDjangoCache` instead, like
+  `SyncDjangoCache(allow_unsafe_cache=False)`, #1611
+- Removed `NewCookie.as_dict` method, #1456
+- `NewCookie.secure`, `CookieSpec.secure`, `NewCookie.httponly`,
+  `CookieSpec.httponly` can no longer be `None`, use `False` instead, #1456
+- `Endpoint` objects are not callable anymore, use `.func` attribute
+  to make the call instead, #1456
+- `security_schemes` API for auth classes was changed,
+  accepts `metadata` and `controller_cls`, and now it is a method,
+  not a property, #1521
+- `security_requirement` API for auth classes was changed, now it is now
+  named `security_requirements`, returns a list of `SecurityRequirement`,
+  accepts `metadata` and `controller_cls`, and now it is a method,
+  not a property, #1521
+- `SecuritySchemeGenerator.__call__` API was changed,
+  now it accepts `metadata` and `controller_cls` as parameters, #1521
+- `ResponseGenerator.__call__` API was changed, now it accepts
+  `metadata` and `controller_cls` as parameters, #1521
+- `ResponseSpec.get_schema` API was changed, now it accepts
+  `controller_cls` as parameter instead of `serializer`, #1521
+- Autogenerated OpenAPI examples now land on the JSON Schema `examples` list
+  instead of the OAS `example` keyword, which OpenAPI 3.2 deprecates
+  inside Schema Objects. `examples` is valid in every version we support.
+  Examples that you write by hand are never rewritten, #1485
+- `XML.attribute` and `XML.wrapped` are now `bool | None` and default
+  to `None`, so they are no longer dumped as `false` into every `xml` object.
+  Both are deprecated in OpenAPI 3.2 in favour of `XML.node_type`, #1485
+- `MediaType.prefix_encoding` and `MediaTypeMetadata.prefix_encoding`
+  are now `list[Encoding] | None`. The spec defines `prefixEncoding`
+  as an array of positional encodings, we used to type it
+  as a single `Encoding`, #1485
+- `Parameter.param_in` is now typed as `ParameterLocation`
+  instead of a plain `str`, #1485
+- `dmr.openapi.mappers.schema_loader.load_schema` does not take
+  `should_generate_example`, `annotation`, and `serializer` anymore.
+  Example generation moved to the schema generator, #1485
+- Removed `PHONE`, `COLOR`, and `STYLE` members from `OpenAPIFormat`,
+  such formats are now loaded as plain strings, #1489
+- `SecuritySchemeRegistry.schemes` is now a read-only property
+  that returns registered security schemes sorted by name, #1557
+- `OpenAPIContext.register_schema` is removed, just like all custom
+  override features. Instead, one must use native serializer tools
+  for custom JSON schema generation, #1558
+- `SyncOrAsyncAuth` and `SyncOrAsyncThrottle` changed `.resolve` parameter
+  from *auth_cls* and *throttle_cls* respectively
+  to *is_async* kw-parameter, #1562
+- `ComponentParserGenerator.__call__` signature was changed
+  to accept *route_metadata* and *controller_cls* instead
+  of *path* and *serializer*, #1502
+- `OperationIdGenerator.__call__` signature was changed
+  to accept *controller_cls* instead of *suffix*, #1502
+- `Controller.get_schema` signature was changed
+  to accept *route_metadata* instead of *path* and *route*, #1502
+- `Endpoint.get_schema` signature was changed
+  to accept *route_metadata* instead of *path* and *route*, #1502
+- `Endpoint.get_operation_id` was removed, instead customize
+  the `OperationIdGenerator` instance or `operation_id` metadata parameter
+  to the endpoint, #1502
+- `ParameterGenerator.__call__` signature was changed
+  to accept *metadata* and *controller_cls* instead
+  of *serializer* and *context*, #1620
+- `ComponentParserSpec` moved from `dmr.metadata` to `dmr.components`,
+  it is now a named tuple of `parser`, `model`, `model_meta`, and `default`
+  fields. Previously it was a regular tuple of three elements, #1494
+- `BaseSerializer.build_context_model` is a new abstract method,
+  custom serializers must implement it. It builds the model
+  that parses all components of an endpoint at once,
+  previously it was always a `TypedDict` built by `SerializerContext`, #1494
+- Component annotations hidden inside other types are now rejected.
+  Things like `parsed_body: Body[Model] | None = None` used to be silently
+  ignored, since the component is hidden behind a union, now they raise
+  `UnsolvableAnnotationsError`. Use `Body[Model | None] = None` instead, #1494
+- `ComponentParser.provide_context_data` now accepts *default* keyword
+  parameter, custom components must accept it as well.
+  It is the default value of the endpoint parameter
+  or `EMPTY` when there's none, #1494
+- `ComponentParser.get_schema` signature was changed
+  to accept *controller_cls* instead of *serializer*, #1620
+- `SupportsFileParsing.schema_metadata` signature was changed
+  to accept *controller_cls* instead of *serializer*,
+- `FileBodyLike.media_type` signature was changed, #1620
+  now it also accepts *metadata* and *controller_cls* parameters, #1620
+- `jwt_ensure_csrf` was removed from reusable JWT cookie views,
+  it is now always mandatory, #1574
+- `CookieJWTSyncAuth` and `CookieJWTAsyncAuth` now use `jwt_cookie`
+  as the default `security_scheme_name` instead of `jwt`.
+  Previously it was the same as the `HeaderJWTSyncAuth`
+  and `HeaderJWTAsyncAuth` one, so using both of them in a single endpoint
+  was generating a single `jwt` security scheme and requirement, #1587
+- `validate_events` parameter was removed from `@modify` and `@validate`,
+  it was silently ignored for non-streaming controllers.
+  Use `extras=Streaming(validate_events=...)` with `dmr.streaming.modify`
+  and `dmr.streaming.validate` instead. `Controller.validate_events`
+  was removed as well, use `extras = Streaming(validate_events=...)`
+  on streaming controllers, #1612
+- `StreamingController.streaming_ping_seconds` was removed,
+  use `extras = Streaming(ping_seconds=...)` on streaming controllers
+  or `extras=Streaming(ping_seconds=...)` per endpoint instead.
+  `SSEController` still sends pings every 15 seconds by default, #1623
+- OpenAPI object fields that can have `None` as a real value
+  now default to `EMPTY` instead of `None`: `Schema.const`, `Schema.default`,
+  `Schema.example`, `Example.value`, `Example.data_value`, `Header.example`,
+  `MediaType.example`, `MediaTypeMetadata.example`,
+  `ParameterMetadata.example`, `Parameter.example`,
+  and `Link.request_body`. Passing `None` to them explicitly
+  now dumps `null` into the schema, #1619
+
+### Performance improvements
+
+- `MsgspecSerializer` now parses all components of an endpoint
+  into a `msgspec.Struct` with `gc=False` instead of a `TypedDict`.
+  Validation of the parsed context is around x2 faster, #1494
+  `PydanticSerializer` keeps using a `TypedDict`, it is the fastest
+  model for `pydantic` when there are no defaults, #1494
+- `RequestNegotiator` and `ResponseNegotiator` now memoize their decisions
+  per header value. Almost every client sends the very same
+  `Content-Type: application/json` and `Accept: application/json` headers,
+  so there's no point in running the negotiation over and over again.
+  Headers that hit the exact match are around x1.2 faster,
+  headers that have to go through the full negotiation
+  (like the `Accept` header that any browser sends)
+  are up to x65 faster for renderers and x15 faster for parsers.
+  The cache is bound by `DMR_MAX_CACHE_SIZE`
+  and is not shared between endpoints, #1455
+- Improved checks performance, now we don't call checks
+  that are not defined for an endpoint. For example,
+  if there's no throttle, the check function won't even be called.
+  Previously, it was called and early returned from it, #1454
+- Increased default `DMR_MAX_CACHE_SIZE` from `256` to `1024`, #1448
+- Changed how `@modify` responses are created,
+  we now return `HttpResponseBase` objects directly from `ResponseValidator`.
+  Which allows us to do less calls
+  and not to create intermediate heavy objects, #1456
+- Improved `NewCookie` creation and conversion times
+  and `CookieSpec.is_equal` execution time, #1456
+- Improved `set_cookies` execution time: we now don't call it
+  if no cookies are to be set, `response.set_cookie` call is optimized, #1456
+- Improved `NewHeader.to_spec` execution time, #1456
+- Improved the renderer selection for the common cases, #1456
+- Optimized `SyncDjangoCache` and `AsyncDjangoCache` json parsing, #1456
+- Optimized `Controller.as_view()` for cases with `csrf_exempt=True`,
+  which is the default, #1456
 
 ### Features
 
-- Adds "Opaque Token" auth backend, #1051
+- Component parameters can now have default values, like
+  `parsed_body: Body[Model | None] = None`
+  or `parsed_query: Query[Filters | None] = None`.
+  When a request has no data for a component, the endpoint
+  receives its default as-is, without any parsing.
+  Bodies with defaults are documented with `required: false`,
+  parameters of other components with defaults are documented
+  as not required in the OpenAPI schema, #1494
+- Added `FunctionDefaults` and `ComponentParserBuilder.defaults_cls`
+  to customize how defaults of component parameters are found, #1494
+- Auth and throttling instances now provide a `validate` hook for enforcing
+  instance-specific constraints during endpoint construction, #1600
+- Added `Controller.metadata_merger_cls` and `dmr.validation.MetadataMerger`
+  to customize how endpoint, controller, and settings values are resolved
+  into the endpoint metadata. All layers of every field go through
+  a single call, so it can be used to bring back merging
+  of `auth` or other sequences from all levels, #1576
+- Now we can change the error type / instance that
+  we are handling from layer to layer,
+  for example: endpoint-level handler can raise a new error
+  and controller-level error handler will receive this new error, #1561
+- Added `Settings.semantic_schema_providers` with the ability to add custom
+  default response spec providers. For example, if all controller return
+  some specific status code and schema, now it can be configured properly.
+  We configure response validation and CSRF response codes there, #1521
+- Added better CSRF support, now controllers with `csrf_exempt=False`
+  get the correct response specs and `build_csrf_handler` allows customizing
+  `CSRF_FAILURE_VIEW` Django setting to return actual REST responses,
+  instead of HTML ones, #1521
+- Added `CSRF_USE_SESSIONS=True` CSRF security scheme support, #1608
+- Added `semantic_schema` module with `AuthProvider` interface, #1521
+- Now `security_requirements` can return both
+  `AND` and `OR` auth strategies, previously
+  it was only possible to represent `OR` strategy, #1521
+- Added `CursorPagination` support to `drm.pagination`, #1428
+- Added `HttpSpec.cookie_semantics` validation rule, #1555
+- Added `clear_cache` method to `RequestNegotiator` and `ResponseNegotiator`
+  to drop the memoized negotiation results. Needed when parsers
+  or renderers of an endpoint are modified in place, #1455
+- Added class-level overrides for `OpenAPIContext` generators, registries, and
+  `ConfigMerger`, allowing custom operation ID generation and schema
+  customization through context subclasses, #1461, #1487, #1556
+- Added class-level overrides for `ProblemDetailsModel`
+  in `ProblemDetailsError`, #1556
+- `summary` and `description` of a `PathItem` are now parsed
+  from the controller's docstring, just like they are parsed
+  from the endpoint's docstring for an `Operation`.
+  Setting `Controller.summary` or `Controller.description` explicitly
+  still wins, `None` means that nothing is generated at all, #1446
+- Added `tags` controller attribute to apply OpenAPI tags
+  to all endpoints of this controller. They are merged
+  with router-level and endpoint-level tags, #1434
+- URL parameters of `re_path()` routes now have `pattern` in their schema,
+  it is copied from the sub-pattern of the matching named group:
+  `r'^v(?P<version>\d+)/$'` documents `version`
+  as `{'type': 'string', 'pattern': '^(?:\d+)$'}`, #1439
+- Added `json_schema_kwargs` attribute to `PydanticSchemaGenerator`
+  to pass extra keyword arguments like `by_alias`, `union_format`,
+  and `schema_generator` to `pydantic`'s `TypeAdapter.json_schema`, #1462
+- Added `schema_hook` class method to `MsgspecSchemaGenerator`
+  to customize JSON schema generation for custom types, #1462
+- Explicit `is_abstract = True` controller definitions are now respected.
+  A controller with an exact serializer can be marked as abstract
+  to be reused without being routed: it does not build any endpoints.
+  Subclasses that don't declare `is_abstract` themselves are concrete, #1458
+- `NewCookie.expires` and `CookieSpec.expires` can now be `dt.datetime`, #1456
+- Added `concrete_views` next to `views` for every auth flow:
+  `dmr.security.jwt.concrete_views`, `dmr.security.token.concrete_views`,
+  and `dmr.security.django_session.concrete_views`.
+  They are controllers that only need a serializer,
+  everything else is optional: `token_cls` defaults to the `Token` model
+  of `dmr.security.token.app`, and `jwt_refresh_cookie_path` defaults
+  to `'/'`. Each of them has its own typed `as_view`, which takes
+  the fields that controller requires and passes everything else
+  to Django as `initkwargs`, so there is no view code at all:
+  `path('login/', ObtainTokenSyncController.as_view(
+  serializer=PydanticSerializer, token_cls=Token))`.
+  They all set `auth = None`, so auth from the settings never makes
+  the login endpoints themselves require auth.
+  They are `@final`: use them for the common cases, custom logic goes
+  to the reusable controllers in `views`, #1457
+- Added the missing OpenAPI 3.2 fields to our spec objects, #1485:
+  - `OpenAPIConfig.self_uri` and `OpenAPI.self_uri` for `$self`
+  - `Server.name`
+  - `Tag.summary`, `Tag.parent`, and `Tag.kind`
+  - `'querystring'` as a `Parameter.param_in` value
+  - `Components.media_types`
+  - `Response.summary` and `ResponseSpec.summary`
+  - `MediaType.description`
+  - `Encoding.encoding`, `Encoding.item_encoding`,
+    and `Encoding.prefix_encoding`
+  - `Example.data_value` and `Example.serialized_value`
+  - `XML.node_type`
+  - `Discriminator.default_mapping`
+  - `OAuthFlows.device_authorization`
+    and `OAuthFlow.device_authorization_url`
+  - `SecurityScheme.oauth2_metadata_url` and `SecurityScheme.deprecated`
+- `Set-Cookie` response headers now take their example value from the regular
+  example generation, so they respect `Settings.openapi_examples_seed`
+  and produce no example at all when it is disabled.
+  They used to always document a static `<name>=123`, #1485
+- `content` of `Response`, `RequestBody`, `Parameter`, and `Header`
+  now also accepts `Reference` values, so they can point
+  at `#/components/mediaTypes/`, #1485
+- Reusable controllers now support `TypeVar` defaults from PEP 696.
+  A subclass that does not pass some of the type args
+  gets their defaults, just like type-checkers do it:
+  both for a bare `class Sub(Reusable): ...`
+  and for a partial `class Sub(Reusable[PydanticSerializer]): ...`.
+  Defaults that are type vars themselves are resolved as well.
+  The controller that declares the defaults is not affected:
+  it stays abstract, because its own type vars are not exact types, #1452
+- Added `dmr.metadata.MergeableMetadata` base class. Subclass it to define
+  how your own `Annotated` metadata combines when it is placed on members
+  of a union type. `ResponseSpecMetadata` is the first one to use it, #1460
+- Added `json_schema_dialect` attribute to `OpenAPIConfig`.
+  `OpenAPI.json_schema_dialect` existed, but there was no way to set it,
+  so the `jsonSchemaDialect` field was never generated, #1486
+- Allow all bool values in `dmr.openapi.objects` also accept `None`, #1437
+- Added all formats from the OpenAPI Format Registry to `OpenAPIFormat`, #1489
+- `slug` and `path` url converters now describe themselves in the schema:
+  `slug` adds the `pattern` of its own regex,
+  `path` adds a `description` about slashes, #1441
+- `external_path` can now be nested anywhere in the URL resolution tree, #1567
+- `external_re_path` was added to support the same use-case
+  as `external_path`, but for regex patterns, #1567
+- Added `semantic_schema`, `semantic_auth`, and `exclude_semantic_auth`
+  endpoint, controller, settings, and metadata parameters
+  to disable all semantic schema generation or semantic auth injection
+  respectively, #1586
+- Added `extras=` parameter to `@modify` and `@validate` for custom
+  controllers: subclass `dmr.endpoint.Extras`, create typed decorators
+  with `ModifyEndpoint(YourExtras)` and `ValidateEndpoint(YourExtras)`,
+  and assign `extras = YourExtras(...)` on the controller to enable them
+  and to provide controller-level defaults, #1612
+
+### Bugfixes
+
+- `SchemaRegistry.maybe_resolve_reference` now puts the keywords
+  that sit next to `$ref`, like `default` and `description`,
+  on top of the component's own schema without modifying
+  the component itself. Custom `x-` schema extensions
+  are now kept through loading and dumping, for both `pydantic`
+  and `msgspec`, #1491
+- Fixed models that are only used as `Query`, `Headers`, `Cookies`,
+  `Path`, and `FileMetadata` components, being added to `components.schemas`
+  of the OpenAPI schema. Such models are inlined and never referenced,
+  now only components that are referenced
+  from the final schema are registered, #1647
+- Fixed seeded OpenAPI examples of `datetime`, `date`, and `time`
+  changing with the current time. Faker's defaults end at the current time,
+  now these examples are generated between `2000-01-01` and `2026-01-01`.
+  `timedelta` examples are not always `P0D` anymore, #1632
+- Fixed `example` of `NewHeader` and `HeaderSpec` not being
+  in the OpenAPI schema. Now it is set on the `Header` object,
+  and such headers don't get generated examples, #1627
+- Fixed generated OpenAPI examples that are `None` being dropped,
+  for example, for `-> None` and `-> int | None` responses.
+  `dmr.openapi.mappers.example.generate_example` now returns `EMPTY`
+  instead of `None` when there's no example, #1626
+- Fixed seeded OpenAPI examples depending on `PYTHONHASHSEED`.
+  `Controller.api_endpoints` was built in the iteration order
+  of `allowed_http_methods`, which is a `frozenset`,
+  so endpoints got their examples in a different order in every process.
+  Now `api_endpoints` is sorted by controller method names, #1629
+- Fixed `default: null` being dropped from the OpenAPI schema,
+  for example, for `field: str | None = None` model fields.
+  The same was true for `const: null` and `example: null`, #1619
+- Path parameters now always have `required: true` in the OpenAPI schema,
+  even when their `Path` model fields have default values.
+  Previously, such parameters generated an invalid schema, #1610
+- Fixed typing error in callable cases
+  of `@modify.lazy` and `@validate.lazy`, #1607
+- Fixed every autogenerated OpenAPI example of the same type getting
+  the same value. The factory was reseeded before each example, which
+  restarted its random stream, so all strings in a schema came out equal.
+  It is now seeded once per schema build: examples of one schema differ
+  from each other, and a schema no longer depends on how many examples
+  were generated before it, #1548
+- `__dmr_split_commas__` now strips the optional whitespace around each
+  `','` when splitting a header value. `X-Tag: 1, 2` used to be parsed as
+  `['1', ' 2']`, which failed validation for `list[int]` and silently kept
+  a leading space for `list[str]`. RFC 9110 treats `a, b` and `a,b` as the
+  same list, #1526
+- Fixed Redis throttling reset values sometimes being 1 second above the
+  configured window due to clock skew between Redis server time and Python
+  time. The Redis backend now uses the `ttl` returned by Redis directly
+  instead of computing an absolute timestamp, #1308
+- Fixed an empty `description` being generated for the merged `requestBody`
+  in the OpenAPI schema, when a controller has several request body
+  components and none of them provides a description, #1495
+- `load_schema` now fills `Schema.anchor`, `Schema.comment` and
+  `Schema.schema_uri` from `$anchor`, `$comment` and `$schema`.
+  All three attributes existed and were always `None`, so those keywords
+  were lost on the way in. `$ref` is left alone on purpose: it needs
+  the `Reference | Schema` handling fixed in every call site at once, #1490
+- Fixed a bug that `load_schema` was not loading `anchor`,
+  `comment`, and `schema_uri` fields, #1490
+- Default OpenAPI `operation_id` generation now preserves capitalization
+  in controller class names, #1500
+- Fixes that endpoints with `auth=None` inherited document-level
+  `OpenAPIConfig.security` requirements, now they emit `security: []`, #1497
+- `get_annotated_metadata` now unwraps type aliases, which fixes every
+  metadata lookup we do: component parsers, `ResponseSpecMetadata`,
+  `ParameterMetadata`, `MediaTypeMetadata`, and conditional types.
+  Most visibly, a component hidden behind a `type X = Body[User]` alias
+  (or a `TypeAliasType` object) used to be silently dropped
+  from `component_parsers`, and the endpoint then failed with a `TypeError`
+  about a missing argument on every request.
+  `X: TypeAlias = Body[User]` was never affected: it is a plain
+  assignment in runtime. Aliases of aliases and subscripted generic
+  aliases are unwrapped as well, #1460
+- `ResponseSpecMetadata` on a member of a union return type is no longer
+  ignored: `-> Annotated[User, ResponseSpecMetadata(...)] | str` now
+  documents the headers and cookies that `User` responses carry.
+  They are documented as `required=False`, because a `str` response
+  is returned without them. Annotate the whole union
+  (`Annotated[User | str, ResponseSpecMetadata(...)]`) to require them
+  everywhere, that behaviour is unchanged, #1460
+- Fixed a bug that custom `format` values, like `name-email`
+  from `pydantic.NameEmail`, were raising `ValueError`
+  during schema generation, #1489
+- Fixed a bug that empty `schemas` and `securitySchemes` component containers
+  were rendered in the OpenAPI, #1521
+- Fixed missing `@sensitive_variables()` decorator on critical security parts
+  in `auth` and tokens' methods, #1552
+- OpenAPI schema generation is now deterministic: every generated mapping
+  is sorted by a stable key instead of the definition order, #1557
+- Fixed that `pydantic` serializer was not dumping `@dataclass`
+  instances correctly without `msgspec` installed, #1560
+- Fixed `@modify` and `@validate` types: now `tags`, `servers`,
+  and `extra_responses` are typed as `Sequence`, not as `list`, #1563
+- Fixed nested `Router` patterns OpenAPI parameter spec generation, #1502
+- Fixed OpenAPI generation for cookie-based auth classes,
+  now we don't add `csrf` auth requirement to safe methods, #1572
+- Fixed reusable views `error_model` definition for `401` response, #1573
+- Fixed that `links` and `callbacks` in endpoints definitions can
+  be any `Mapping`, not just `dict`, #1576
+- Now prefixes like `api/` in `build_404_handler` and `build_500_handler`
+  only cover full URLs like `/api/v1`
+  and do not cover partials like `/apiary/v1`, #1606
+
+### Misc
+
+- Agent skills now ship inside the `dmr` package as `dmr/.agents/skills`,
+  so `uvx library-skills` installs the skills matching the installed version
+  into any project, the Claude Code marketplace keeps working
+- Added `dmr-upgrade` agent skill with the migration prompts
+  of the three latest breaking releases
+- Split the `dmr` skill into a short `SKILL.md` and topic references,
+  fixed skill descriptions to trigger on natural requests,
+  added `agentskills validate` to `just lint`
+- Fixed `dmr-from-dj-rest-auth` entry in the Claude Code marketplace
+- Docs: every page is also published as Markdown (`<page>.md`),
+  the `M↓` button next to its title copies it,
+  `llms-full.txt` now includes the code of every example,
+  `llms.txt` now carries the version
+
+
+## 0.15.0 (2026-09-11)
+
+### Breaking changes
+
+- `check_auth` of `RefreshTokenSyncController`, `RefreshTokenAsyncController`,
+  `VerifyTokenSyncController`, and `VerifyTokenAsyncController` now takes
+  the decoded `token` as its second argument and types `user`
+  as `AbstractBaseUser` instead of `Any`.
+  It used to differ from `check_auth` of the auth classes,
+  which is why `JWTokenBlocklistSyncMixin` and `JWTokenBlocklistAsyncMixin`
+  could not be mixed into these controllers, #1290
+- `dmr.security.jwt.views` is now a package
+  of `base`, `body`, and `cookie` modules.
+  Every public name is still importable from `dmr.security.jwt.views`,
+  only the private bases moved, #1290
+- `JWToken.encode` now raises `JWTokenError` (a token-layer semantic error)
+  instead of the HTTP-layer `InternalServerError` when encoding fails.
+  The error is converted back to `InternalServerError` at the HTTP boundary
+  in `BaseTokenController.create_jwt_token`, so request-serving paths keep
+  their 500 contract while non-request callers (management commands, Celery
+  tasks, test factories) get a meaningful exception. The original `pyjwt`
+  cause is preserved in the traceback (no more `from None`).
+- Renamed `json_dump` to `json_dumps` in `dmr.openapi.dump` and `dmr.internal.json`
+  to follow standard string-serialization conventions, #1399
+- Removed `QueryTokenSyncAuth` and `QueryTokenAsyncAuth` auth classes,
+  because they were insecure, you can use [older existing versions](https://github.com/wemake-services/django-modern-rest/blob/14884b432ee075ec3d78ff388944ebc5f0b5d432/dmr/security/token/auth/header.py), #1288
+- Removed `FileResponseSpec.file_body`,
+  use `FileResponseSpec.return_type` instead, #1278
+- Removed `FileMetadataComponent.schema_metadata`,
+  now we use `SupportsFileParsing.schema_metadata` instead, #1278
+- `SSEvent` does not check `id` and `event` fields for null bytes
+  and line breaks on creation anymore, this is now a part of the events
+  validation pipeline, so it respects `validate_events`, #1329
+- `check_event_field` now raises `ValidationError` instead of `ValueError`,
+  so a wrong field is streamed as an `error` event
+  and does not break the whole stream, #1329
+- `401` responses now carry a `WWW-Authenticate` header as required
+  by RFC 9110, when the endpoint's auth can express a challenge.
+  Note that browsers show their native login prompt on a `Basic` challenge,
+  pass `www_authenticate=False` to the auth instance to opt out, #1334
+- `SyncAuth` and `AsyncAuth` now have an abstract
+  `www_authenticate_challenge` property, so custom auth classes
+  must say what challenge they send, or return `None`
+  when they cannot be expressed as one, #1334
+- Removed init-only `leeway` argument of `JWToken`,
+  it is only used by `JWToken.decode` now, #1324
+- `JWToken` does not validate `exp` and `iat` on creation anymore,
+  now `JWToken.encode` validates them instead, #1324
+- `JWToken` does not allow dataclass instances in `extras` anymore, #1408
+- Throttling cache keys are now hashed to keep their length bounded, #1337
+- HTTP Basic Auth credentials are no longer URL-decoded,
+  so percent-encoded characters such as `%40` are preserved as-is, #1363
+- `HttpBasicSyncAuth` and `HttpBasicAsyncAuth` now require
+  the `auth_scheme` header prefix, it is `Basic` by default
+  and is matched exactly, credentials sent without it
+  are not accepted anymore.
+  Pass `auth_scheme=''` to keep reading prefixless
+  credentials like the older versions did, #1330
+- `HttpBasicSyncAuth` and `HttpBasicAsyncAuth` now raise
+  `NotAuthenticatedError` when credentials have the right
+  `auth_scheme` prefix, but cannot be decoded,
+  previously the next auth in the chain was tried, #1330
+- `ToJsonKwargs` and `ToModelKwargs` are now `closed=True` typed dicts, #1430
+
+### Features
+
+- Added `@modify.lazy` and `@validate.lazy` decorators
+  for reusable controllers, #1409
+- Added `exclude_validate_responses` setting, controller attribute,
+  and `@modify` / `@validate` argument to skip response validation
+  for the given status codes, like `500`, #1370
+- Added `WWW-Authenticate` support for auth classes that read
+  the `Authorization` header: `HttpBasicSyncAuth`, `HttpBasicAsyncAuth`,
+  `HeaderJWTSyncAuth`, `HeaderJWTAsyncAuth`, `HeaderTokenSyncAuth`,
+  and `HeaderTokenAsyncAuth`. Cookie-based and custom-header auth
+  send no challenge, because there is none to express.
+  Configurable via the new `www_authenticate=` and `realm=` arguments
+  and the `SyncAuth.www_authenticate_challenge` property, #1334
+- Added `dmr.security.add_www_authenticate` function to add
+  the `WWW-Authenticate` header to a `NotAuthenticatedError`.
+  `global_error_handler` calls it, so replacing that handler
+  is how you change or drop this behavior, #1334
+- Added `CookieJWTSyncAuth` and `CookieJWTAsyncAuth`
+  to read JWT tokens from cookies instead of headers, #1193
+- Added `CookieObtainTokensSyncController`,
+  `CookieObtainTokensAsyncController`,
+  `CookieRefreshTokensSyncController`,
+  `CookieRefreshTokensAsyncController`,
+  `CookieLogoutSyncController`, and `CookieLogoutAsyncController`
+  to issue, rotate, and drop JWT tokens as cookies
+  that `CookieJWTSyncAuth` and `CookieJWTAsyncAuth` read back.
+  Cookies are `httponly`, `secure`, and `samesite='lax'` by default,
+  the refresh cookie is scoped to the refresh endpoint,
+  and refresh and logout enforce CSRF, #1290
+- Added `DEFAULT_ACCESS_COOKIE` and `DEFAULT_REFRESH_COOKIE` constants
+  to `dmr.security.jwt.auth.cookie`, they are the default cookie names
+  of both the cookie auth and the cookie views, #1290
+- Added `NewCookie.from_spec` to build a response cookie
+  from its `CookieSpec`, so runtime cookies of `@validate` endpoints
+  cannot drift away from the spec they are validated against, #1290
+- `JWTokenBlocklistSyncMixin` and `JWTokenBlocklistAsyncMixin` can now
+  be mixed into the refresh controllers, both the body and the cookie ones,
+  so a blocklisted token cannot buy a new pair of tokens.
+  They used to only work with auth classes, #1290
+- Added `get_user` to `RefreshTokenSyncController`
+  and `RefreshTokenAsyncController`, the user lookup used to be inlined
+  into `refresh` with no way to override it alone, #1290
+- Added `response_headers` and `response_headers_spec`
+  to the cookie controllers, so `validate_spec` can be redefined
+  without repeating the `Cache-Control` header by hand, #1290
+- `CookieSpec.path` and `NewCookie.path` now accept lazy strings,
+  so a cookie can be scoped to a `reverse_lazy` url, #1290
+- Added `HeaderJWTSyncAuth` and `HeaderJWTAsyncAuth`,
+  `JWTSyncAuth` and `JWTAsyncAuth` are kept as their aliases, #1193
+- Added `XSessionTokenSyncAuth` and `XSessionTokenAsyncAuth`
+  to authenticate `django-allauth` headless session tokens,
+  you would need to install
+  [`django-allauth`](https://github.com/pennersr/django-allauth)
+  separately, #1193
+- Added `query` method support for `PathItem` OpenAPI 3.2.0 spec, #1300
+- Added `Parser.validate` method for import-time validation of parser
+  configuration, #1304
+- Added `Renderer.validate` method for import-time validation of renderer
+  configuration, #1306
+- Added `Router.ignore_from_spec` to exclude entire router subtrees
+  from the generated OpenAPI specification, #1309
+- Added `FileMetadata` conditional types, #1278
+- Added `SupportsFileParsing.schema_metadata` method to customize
+  file schema from the parser, #1278
+- Added `validate_event_fields` to the `SSEStreamingValidator` pipeline,
+  it checks `id` and `event` fields of all event types,
+  including custom ones, #1329
+- Added `JWToken.validate_issued_claims` method to customize
+  the checks we run before signing a token, #1324
+- Added `security.NO_STORE_HEADERS`, all auth views we ship now
+  return the `Cache-Control: no-store` header
+  and document it in the OpenAPI schema, #1335
+- Added `@modify.lazy` support and `modify_spec` method
+  to all all views we ship, #1423
+- JWT tokens are now encoded and decoded with `msgspec`
+  when it is installed, which makes `JWToken.encode` about 1.3x
+  and `JWToken.decode` about 1.15x faster.
+  Note that only json-native values in `JWToken.extras` are guaranteed
+  to be encoded identically with and without `msgspec`, #1390
+- Optimized `JWToken` encoding and decoding algorithms, #1408
+- Added `BaseThrottleSyncBackend.lock` and `BaseThrottleAsyncBackend.lock`
+  to control the in-process lock for `incr`,
+  `SyncRedis` and `AsyncRedis` skip it because Lua scripts are atomic, #1339
+- `OpenAPI.convert()` now caches and returns
+  the same dictionary per instance, #1402
+- `accepted_type` and `accepted_header` are faster now,
+  media types without parameters skip the regex based parsing
+  of parameters and of the `q` weight entirely, #1407
+- `dmr.openapi.OpenAPI` now has `cache_clear` method
+  to drop all cached internal state, #1431
+
+### Bugfixes
+
+- Fixed `CookieSpec(max_age=0)` never matching the response cookie
+  it describes, `0` was treated as a missing value.
+  It is how a cookie is dropped, so it could not be described at all, #1290
+- Fixed `PydanticFastSerializer` failing to validate an empty response body,
+  so `@validate` endpoints that return `204` with it
+  raised a serialization error instead of the response, #1290
+- Fixed `@modify` and `@validate` typing: passing async `auth`
+  or `throttling` to a sync endpoint
+  (and sync ones to an async endpoint) is now a type error,
+  `links` is now also accepted by all `@modify` overloads, #1393
+- Fixed `@validate` return type inference for all the type-checkers,
+  now it does not change the original `HttpResponseBase` subtype, #1409
+- Fixed `EndpointMetadata.validate_responses` being annotated
+  as `bool | None`, it is always resolved
+  from the settings, the controller, and the endpoint, #1370
+- Fixed `responses` of `ObtainTokenSyncController`,
+  `ObtainTokenAsyncController`, `DjangoSessionSyncController`,
+  and `DjangoSessionAsyncController` being narrowed
+  to a fixed-size tuple, subclasses could not change it, #1371
+- Added missing `@sensitive_variables` decorator to all auth views,
+  so credentials and tokens are hidden
+  in error reporting middlewares and logs, #1323
+- Parsed request data is no longer stored as a local variable
+  of the endpoint's frame, because it was shown
+  in error reports of any endpoint, #1323
+- Fixed `JWToken.encode` raising a bare `TypeError`
+  when `extras` cannot be serialized to json, #1373
+- JWT auth, refresh, and verify now return `401` instead of `500`
+  when the token subject cannot be a value of the user lookup field,
+  for example a non-numeric `sub` with the default integer `pk`, #1284
+- Fixed `DjangoSessionSyncAuth`, `DjangoSessionAsyncAuth`,
+  `CookieTokenSyncAuth`, and `CookieTokenAsyncAuth` to check CSRF only
+  when this auth class is actually used and not skipped, #1289
+- Allow using lazy translations in many places,
+  like `Controller.summary`, `ResponseSpec.description`,
+  `HeaderSpec.description`, #1298
+- Fixed `Router.include` dropping `tags` and `deprecated` metadata, #1299
+- Fixed `PathItem` to support `additionalOperations` field for custom
+  HTTP methods (like `PURGE`, `LINK`), #1300
+- Fixed a bug when non-file parsers were listed in the response schema
+  for file responses, #1278
+- Fixed `SimpleRate` throttling reports with redis backends,
+  it used to error on missing throttling stats, #1333
+- SSE events are not validated at all when `validate_events` is `False`,
+  `id` and `event` fields used to be checked even then, #1329
+- Custom SSE event types now have their `id` and `event` fields
+  validated just like `SSEvent` does, #1329
+- Fixed `JWToken.decode` validating `exp` and `iat` twice,
+  now `leeway`, `verify_exp`, and `verify_iat` are respected
+  and invalid tokens return `401` instead of `500`, #1324
+- Fixed the JWT blocklist being silently bypassed by tokens without `jti`,
+  `JWTokenBlocklistSyncMixin` and `JWTokenBlocklistAsyncMixin`
+  now add `jti` to `require_claims`, so such tokens get `401`.
+  Blocklisting them returns `401` as well
+  instead of failing with a database `IntegrityError`, #1322
+- JWT authentication now rejects refresh tokens when access tokens are expected,
+  #1320
+- Fixed a bug when request data might be copied in `parse_as_post`, #1328
+- Fixed postponed annotation resolution for wrapped endpoint functions
+  whose decorators are defined in another module, #1417
+- Detailed CSRF failure reasons are now included
+  in error responses only in debug mode and not in production, #1332
+- Empty response body checks now cover `1xx`,
+  `205 Reset Content`, and `HEAD`, #1340
+- Media types with `q=0` in the `Accept` header are not selected
+  for the response anymore, `q=0` means "not acceptable",
+  so such requests now get a `406` response.
+  This matches `django.http.HttpRequest.accepted_types`, #1407
+- Fixed `Accept` headers with out of range `q` values returning `500`,
+  `q=inf` used to raise `OverflowError` while sorting media types.
+  Out of range weights are now discarded and treated as `q=1`,
+  just like `django.http.request.MediaType` does, #1407
+
+### Misc
+
+- Documented that `500` must be described or excluded from validation,
+  when running with `validate_responses` enabled, #1370
+- Fixes AI docs and plugin install instructions, #1311
+- Documented safe use of user-provided redirect targets with `RedirectTo`,
+  #1326
+- Added `dmr-from-dj-rest-auth` agent skill to migrate `dj-rest-auth`
+  installations to `django-modern-rest` and `django-allauth` headless, #1193
+- Documented why and how to remove expired `BlocklistedJWToken`
+  and `Token` rows on a schedule, #1336
+- Added a guide on writing your own auth class
+  for transports we don't ship, #1366
+
+
+## 0.14.0 (2026-08-14)
+
+### Breaking changes
+
+- Refactored public `routing.ExternalURL` into protected `_ExternalURL`,
+  use `external_path()` function instead, #1262
+
+### Features
+
+- Added initial `ty` support, #1257
+- Added new checks for HTTP spec validation, #1341
+- Added support of reusable controllers with `@validate`, #1259
+- Added default value to `prefix` parameter in `Router.__init__`, #1267
+- Added `to_urlpatterns` function to include `Router`
+  instances into `urlpatterns` or other routers, #1262
+
+### Bugfixes
+
+- `OpenAPIConfig.openapi_version` now support any `str` argument, #1252
+
+### Misc
+
+- Improve reusable controllers docs, #1259
+
+
+## 0.13.0 (2026-08-10)
+
+This release was focused on better routing and better OpenAPI support.
+See https://github.com/wemake-services/django-modern-rest/releases/tag/0.13.0
+
+### Breaking changes
+
+Since this release, we would only publish migration prompts
+on the releases page: https://github.com/wemake-services/django-modern-rest/releases
+
+- `Schema.then` is renamed to be `Schema.schema_then`
+  to be consistent with other similar names, #1221
+- `dmr.openapi.objects.openapi.convert` function is renamed and moved
+  to `dmr.openapi.mappers.schema_normalization.dump_schema`, #1221
+- `dmr.openapi.objects.openapi.normalize_key`
+  and `dmr.openapi.objects.openapi.normalize_value` functions are removed, #1221
+- `dmr.openapi.objects.openapi.ConvertedSchema` is renamed and moved
+  to `dmr.openapi.mappers.schema_normalization.DumpedSchema`, #1221
+- `dmr.openapi.views.base.DumpedSchema` is removed,
+  it was just a `str` type alias, #1221
+- `dmr.openapi.objects.OpenAPI` is moved
+  to `dmr.openapi.openapi.OpenAPI`, #1222
+- `rebuild_namespace` parameter in `PydanticSerializer.from_python`
+  was renamed to `extra_namespace`, #1222
+- Changed `skip_validation` parameter to be kw-only
+  on `OpenAPIView.as_view()` and all its subclasses, #1229
+- Renamed `dmr.controller.Controller.get_path_item` to
+  `get_schema`, so all methods will be consistent, #1238
+- Removed `dmr_assert_throttling` and `dmr_assert_async_throttling`
+  fixtures from `pytest`, because there was ever no need to make them fixtures,
+  use regular functions instead, #1245
+- Removed `dmr.test.types` module, because it was only needed
+  for `dmr_pytest` throttling fixtures, #1245
+- Moved `dmr.test.types.ThrottlingWhen` to `dmr.test.throttling`, #1245
+
+### Features
+
+- Django 6.1 official support, #1214
+- Added `--skip-validation` to the `dmr_export_schema` management command, #1225
+- Added `extra_namespace` parameter to `BaseSerializer.from_python`
+  and all its existing subclasses, #1222
+- Added an ability to load external OpenAPI schemas
+  into our typed dataclasses, #1222
+- Added `external_path()` function, so we can load external views, #1239
+- Added `Router.include()` method to include one router into another one, #1244
+- Added an option to skip some controllers / endpoints
+  from the OpenAPI spec, #1238
+- Added `dmr.test.disabled_auth` test helper
+  to disable auth to speed up tests, #1216
+
+### Bugfixes
+
+- Fixed a bug that `OpenAPIConfig.components` were silently
+  ignored when defined with custom user's data, #1229
+- Fixed missing `$ref`, `$anchor`, `$comment`, and `$schema` fields in `Schema`, #1232
+- Fixed `OpenAPIFormat.IRI` value, #1228
+
+### Misc
+
+- Improved testing docs, #1216
+
+
+## 0.12.1 (2026-07-31)
+
+### Bugfixes
+
+- Added missing `@sensitive_post_parameters` decorator
+  to all auth views, #1189
+- Fixed `@endpoint_decorator` passing incorrect parameters
+  to the endpoint function, #1189
+- Fixed `@endpoint_decorator` not working properly with async endpoints, #1189
+
+
+## 0.12.0 (2026-07-30)
+
+### Features
+
+- Added "Opaque Token" auth backend, #1051
 - Added `VerifyTokenSyncController` and `VerifyTokenAsyncController`
   reusable controllers to verify JWT access tokens, #1129
+- Added test helpers in `dmr.test` for asserting that endpoints are
+  throttled, #1167
 
 ### Bugfixes
 
 - Streaming with `streaming_ping_seconds` no longer leaves the pending
   ping timer task behind on every produced event, #1046
-- Fixes `500` error on request bodies containing invalid `utf-8` bytes
+- Fixed `500` error on request bodies containing invalid `utf-8` bytes
   inside `msgspec`'s json and msgpack parsers,
   now `400` is correctly returned, #1135
+- Properly warn users that use our `pytest` plugin,
+  but do not have `pytest_django` installed, #1167
+- CSRF is now ensured before any other actions in Django-Session auth, #1180,
+- Fixed that `jwt` extra was required in `throttling` code, #1178
+- Fixed many places that were missing `__slots__`, #1185
+
+### Misc
+
+- Enabled stricter `__slots__` checks in CI, #1183
+- Improved `pytest` plugin docs
+- Added `nanodjango` and µDjango examples
+  to the micro-framework docs page, #1049
 
 
 ## Version 0.11.0 (2026-06-27)
@@ -83,8 +918,8 @@ for both sync and async controllers at the same time.
 User-facing changes:
 
 ```md
-Change all existing ``dmr.files.FileResponseSpec`` usages
-to include ``as_attachment=True`` parameter.
+Change all existing `dmr.files.FileResponseSpec` usages
+to include `as_attachment=True` parameter.
 ```
 
 ### Features
@@ -142,9 +977,9 @@ User-facing changes:
 ```md
 Apply this change to the code that uses `django-modern-rest`:
 1. Replace `dmr.response.APIRedirectError` with `dmr.response.RedirectTo`
-2. Replace `dmr.throttling.backend.DjangoCache`
-   with `dmr.throttling.backend.SyncDjangoCache` for sync throttles
-   and with `dmr.throttling.backend.AsyncDjangoCache` for async throttles
+2. Replace `dmr.throttling.backends.DjangoCache`
+   with `dmr.throttling.backends.SyncDjangoCache` for sync throttles
+   and with `dmr.throttling.backends.AsyncDjangoCache` for async throttles
 ```
 
 ### Features
@@ -268,7 +1103,7 @@ No breaking changes in this release.
 
 ### Features
 
-- Added `PydanticFastSerializer` to serialize and deserialize ``json``
+- Added `PydanticFastSerializer` to serialize and deserialize `json`
   objects directly, #830
 - Added support for complex `pydantic` fields inside
   `TypedDict`, `@dataclass`, etc models, when using `PydanticSerializer`
@@ -534,15 +1369,15 @@ To migrate `django-modern-rest` to version `0.4.0` and above, you need to:
 
 ### Features
 
-- Added ``FileResponseSpec`` and improved ``FileResponse``
+- Added `FileResponseSpec` and improved `FileResponse`
   schema generation, #682
-- Added ``encoding:`` support for file media types in ``FileMetadata``, #682
+- Added `encoding:` support for file media types in `FileMetadata`, #682
 
 ### Bugfixes
 
 - Fixed OpenAPI schema for custom HTTP Basic auth headers, #672
 - Fixed JWT claim validation and error handling in `JWToken.decode`, #675
-- Fixed incorrect OpenAPI schema for ``FileResponse``, #682
+- Fixed incorrect OpenAPI schema for `FileResponse`, #682
 - Fixed that `404` was not listed in the endpoint's metadata,
   when using `URLRoute` without `Path` component, #685
 - Fixed that `404` was not documented in the OpenAPI
@@ -575,9 +1410,9 @@ To migrate `django-modern-rest` to version `0.4.0` and above, you need to:
   was raising an error. Now it returns 406 as it should, #656
 - Fixed fake examples generation, #638
 - Fixed OpenAPI schema for custom JWT auth parameters, #660
-- Fixed ``Body`` component was not able to properly parse lists
-  with ``multipart/form-data`` parser, #644
-- Fixed that not options were passed to ``JWToken._build_options``, #671
+- Fixed `Body` component was not able to properly parse lists
+  with `multipart/form-data` parser, #644
+- Fixed that not options were passed to `JWToken._build_options`, #671
 
 ### Misc
 

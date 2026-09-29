@@ -10,8 +10,8 @@ or fully customize the experience for custom needs.
 Using SSE
 ---------
 
-You can use SSE with both :func:`~dmr.endpoint.validate`
-and :func:`~dmr.endpoint.modify` style endpoints:
+You can use SSE with both :data:`~dmr.streaming.validate`
+and :data:`~dmr.streaming.modify` style endpoints:
 
 .. tabs::
 
@@ -185,11 +185,26 @@ for `this purpose <https://docs.pydantic.dev/latest/concepts/json_schema/#implem
 
 .. note::
 
-  When creating custom event types, don't forget to validate
-  that ``id`` and ``event`` fields do not contain: ``'\x00'``,
-  ``'\n'``, and ``'\r'`` chars.
+  Custom event types are validated exactly like
+  :class:`~dmr.streaming.sse.metadata.SSEvent` is.
+  Their ``id`` and ``event`` fields are checked
+  for ``'\x00'``, ``'\n'``, and ``'\r'`` chars
+  by :func:`dmr.streaming.sse.validation.validate_event_fields`,
+  you don't have to do anything.
 
-  Use :func:`dmr.streaming.sse.validation.check_event_field` to do that.
+.. warning::
+
+  This check is a part of the events validation pipeline,
+  so it is skipped together with all the other checks
+  when ``validate_events`` is ``False``.
+
+  These two fields are rendered into the stream as-is,
+  a line break in them lets anyone who controls their value inject
+  arbitrary SSE fields into your stream.
+  So, if you turn the events validation off, make sure that ``id``
+  and ``event`` values are safe by construction.
+  You can use :func:`dmr.streaming.sse.validation.check_event_field`
+  to check a single field by hand.
 
 
 Best practices
@@ -205,6 +220,8 @@ Best practices
 - Every 15 seconds we send ``: ping`` keep-alive events,
   when there hasn't been any message,
   to prevent some servers from closing the connection as inactive.
+  Change ``ping_seconds`` in :class:`~dmr.streaming.Streaming` extras
+  per controller or per endpoint to adjust or disable it
   This is a direct recommendation from `the SSE spec <https://html.spec.whatwg.org/multipage/server-sent-events.html#authoring-notes>`_
 
 
@@ -244,6 +261,8 @@ Validation
   :show-inheritance:
 
 .. autofunction:: dmr.streaming.sse.validation.validate_event_data
+
+.. autofunction:: dmr.streaming.sse.validation.validate_event_fields
 
 .. autofunction:: dmr.streaming.sse.validation.check_event_field
 

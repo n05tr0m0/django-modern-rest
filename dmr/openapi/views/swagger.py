@@ -2,17 +2,20 @@ from typing import ClassVar
 
 from django.http import HttpRequest, HttpResponse
 from django.shortcuts import render
+from django.views.decorators.csrf import ensure_csrf_cookie
 
+from dmr.decorators import dispatch_decorator
 from dmr.openapi.views.base import OpenAPIView
 from dmr.settings import Settings, resolve_setting
 
 
+@dispatch_decorator(ensure_csrf_cookie)
 class SwaggerView(OpenAPIView):
     """
     View for rendering the OpenAPI schema with Swagger UI.
 
     Renders an interactive HTML page that allows exploring the
-    :class:`~dmr.openapi.objects.OpenAPI` specification using Swagger UI
+    :class:`~dmr.openapi.openapi.OpenAPI` specification using Swagger UI
     components.
 
     Attributes:
@@ -24,7 +27,7 @@ class SwaggerView(OpenAPIView):
     content_type: ClassVar[str] = 'text/html'
     template_name: ClassVar[str] = 'dmr/swagger.html'
 
-    def get(self, request: 'HttpRequest') -> 'HttpResponse':
+    def get(self, request: HttpRequest) -> HttpResponse:
         """Render the OpenAPI schema using Swagger template."""
         cdn_config = resolve_setting(Settings.openapi_static_cdn)
 

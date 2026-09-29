@@ -1,23 +1,85 @@
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Literal, Never, overload
+from __future__ import annotations
+
+import abc
+import dataclasses
+from collections.abc import Awaitable, Callable, Mapping, Sequence, Set
+from http import HTTPStatus
+from typing import (  # noqa: WPS235
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Generic,
+    Literal,
+    Never,
+    Self,
+    TypeAlias,
+    final,
+    overload,
+)
 
 from django.http import HttpRequest, HttpResponseBase
-from typing_extensions import ParamSpec, Protocol, TypeVar, deprecated
+from typing_extensions import (
+    ParamSpec,
+    Protocol,
+    Sentinel,
+    TypeVar,
+    deprecated,
+)
+
+from dmr.exceptions import EndpointMetadataError
+from dmr.internal.types import EMPTY, StrOrPromise
 
 if TYPE_CHECKING:
+    from dmr.controller import Controller
+    from dmr.cookies import CookieSpec, NewCookie
     from dmr.endpoint import Endpoint
+    from dmr.errors import AsyncErrorHandler, SyncErrorHandler
+    from dmr.headers import HeaderSpec, NewHeader
+    from dmr.internal.context import SerializerContext as SerializerContext
+    from dmr.metadata import ResponseSpec
+    from dmr.openapi.objects import (
+        Callback,
+        ExternalDocumentation,
+        Link,
+        Reference,
+        Server,
+    )
+    from dmr.parsers import Parser
+    from dmr.renderers import Renderer
+    from dmr.security.base import AsyncAuth, SyncAuth
+    from dmr.serializer import BaseSerializer
+    from dmr.settings import HttpSpec
+    from dmr.throttling import AsyncThrottle, SyncThrottle
+    from dmr.validation import (
+        EndpointMetadataBuilder,
+        ModifyEndpointPayload,
+        ValidateEndpointPayload,
+    )
 
 
 _ParamT = ParamSpec('_ParamT')
 _ReturnT = TypeVar('_ReturnT')
-_ResponseT = TypeVar(
-    '_ResponseT',
+_AnyResponseT = TypeVar(
+    '_AnyResponseT',
     bound=HttpResponseBase | Awaitable[HttpResponseBase],
 )
+_SyncResponseT = TypeVar('_SyncResponseT', bound=HttpResponseBase)
+_AsyncResponseT = TypeVar('_AsyncResponseT', bound=Awaitable[HttpResponseBase])
+
+
+# Re-exported API:
 
 
 class ModifySyncCallable(Protocol):
-    """Make `@modify` on functions returning `HttpResponse` unrepresentable."""
+    """
+    Type that represents ``@modify`` decorator for sync functions.
+
+    Features:
+
+    - Does not allow using ``HttpResponse`` as the return annotation
+    - Does not allow applying the decorator on async endpoints
+
+    """
 
     @overload
     @deprecated(
@@ -25,13 +87,13 @@ class ModifySyncCallable(Protocol):
         # But, this is the only way to trigger a typing error.
         'Do not use `@modify` decorator with `HttpResponse` return type',
     )
-    def __call__(self, func: Callable[_ParamT, _ResponseT], /) -> Never: ...
+    def __call__(self, func: Callable[_ParamT, _AnyResponseT], /) -> Never: ...
 
     @overload
     @deprecated(
         # It is not actually deprecated, but impossible for the day one.
         # But, this is the only way to trigger a typing error.
-        'Passing sync `error_handler` to `@modify` requires sync endpoint',
+        'Sync `error_handler`, `auth` or `throttling` require sync endpoint',
     )
     def __call__(
         self,
@@ -48,7 +110,15 @@ class ModifySyncCallable(Protocol):
 
 
 class ModifyAsyncCallable(Protocol):
-    """Make `@modify` on functions returning `HttpResponse` unrepresentable."""
+    """
+    Type that represents ``@modify`` decorator for async functions.
+
+    Features:
+
+    - Does not allow using ``HttpResponse`` as the return annotation
+    - Does not allow applying the decorator on sync endpoints
+
+    """
 
     @overload
     @deprecated(
@@ -56,18 +126,38 @@ class ModifyAsyncCallable(Protocol):
         # But, this is the only way to trigger a typing error.
         'Do not use `@modify` decorator with `HttpResponse` return type',
     )
-    def __call__(self, func: Callable[_ParamT, _ResponseT], /) -> Never: ...
+    def __call__(self, func: Callable[_ParamT, _AnyResponseT], /) -> Never: ...
 
     @overload
-    def __call__(
+    def __call__(  # type: ignore[overload-overlap]
         self,
         func: Callable[_ParamT, Awaitable[_ReturnT]],
         /,
     ) -> Callable[_ParamT, _ReturnT]: ...
 
+    @overload
+    @deprecated(
+        # It is not actually deprecated, but impossible for the day one.
+        # But, this is the only way to trigger a typing error.
+        'Async `error_handler`, `auth` or `throttling` require async endpoint',
+    )
+    def __call__(
+        self,
+        func: Callable[_ParamT, _ReturnT],
+        /,
+    ) -> Never: ...
+
 
 class ModifyAnyCallable(Protocol):
-    """Make `@modify` on functions returning `HttpResponse` unrepresentable."""
+    """
+    Type that represents ``@modify`` decorator for any function.
+
+    Features:
+
+    - Does not allow using ``HttpResponse`` as the return annotation
+    - Does not allow specifying sync / async specific parts
+
+    """
 
     @overload
     @deprecated(
@@ -75,7 +165,7 @@ class ModifyAnyCallable(Protocol):
         # But, this is the only way to trigger a typing error.
         'Do not use `@modify` decorator with `HttpResponse` return type',
     )
-    def __call__(self, func: Callable[_ParamT, _ResponseT], /) -> Never: ...
+    def __call__(self, func: Callable[_ParamT, _AnyResponseT], /) -> Never: ...
 
     @overload
     def __call__(
@@ -85,12 +175,871 @@ class ModifyAnyCallable(Protocol):
     ) -> Callable[_ParamT, _ReturnT]: ...
 
 
+_ControllerT = TypeVar('_ControllerT', bound='Controller[BaseSerializer]')
+_ModifyDecoratorT = TypeVar(
+    '_ModifyDecoratorT',
+    bound=ModifyAsyncCallable | ModifySyncCallable | ModifyAnyCallable,
+)
+
+# We can't split this line into multiline strings,
+# because `pyrefly` does not support this pattern.
+_CallableOrClassmethod: TypeAlias = (
+    'classmethod[_ControllerT, [], _ReturnT] | Callable[[type[Any]], _ReturnT]'
+)
+
+
+_BuiltExtrasT_co = TypeVar('_BuiltExtrasT_co', covariant=True, default=Any)
+
+
+class Extras(Generic[_BuiltExtrasT_co]):
+    """
+    Abstract base class that describes how any extras should look like.
+
+    Extras are extra settings for custom controllers, they are passed
+    as ``extras=`` to ``@modify`` and ``@validate``.
+    A controller declares which extras it supports by assigning
+    a default instance to :attr:`~dmr.controller.Controller.extras`,
+    the same instance provides controller-level defaults.
+
+    Fields that can be omitted on some level should default to ``EMPTY``,
+    required fields are allowed as well.
+
+    The type parameter is the type of the built value,
+    it is stored in :attr:`~dmr.metadata.EndpointMetadata.extras`
+    as the first type variable. Use :meth:`of` to read it with proper types.
+
+    .. versionadded:: 0.16.0
+    """
+
+    __slots__ = ()
+
+    @classmethod
+    @abc.abstractmethod
+    def build(
+        cls,
+        from_endpoint: Self | Sentinel,
+        from_controller: Self,
+        controller_cls: type[Controller[BaseSerializer]],
+        builder: EndpointMetadataBuilder,
+    ) -> _BuiltExtrasT_co:
+        """
+        Method that we need to build the final value.
+
+        It is called for all endpoints of controllers that support
+        these extras, even when ``extras=`` is not passed to the decorator
+        or when there's no decorator at all.
+
+        *from_endpoint* is the instance passed as ``extras=``
+        to the decorator, or ``EMPTY`` when it was not passed.
+        *from_controller* is the instance set as ``Controller.extras``,
+        it is always present.
+
+        We pass *controller_cls*, so user can take any needed values from there.
+        Or from settings, or from where else.
+        *builder* provides other context from the whole payload,
+        use :meth:`~.EndpointMetadataBuilder.merger`
+        to resolve configuration layers the same way other fields do.
+
+        The value returned from here will be used in the final metadata.
+        It is called during the import-time and can be slow.
+        """
+        ...
+
+    @classmethod
+    def of(cls, controller: Controller[BaseSerializer]) -> _BuiltExtrasT_co:
+        """
+        Get the built extras of the endpoint that serves the current request.
+
+        This is the typed way to read
+        :attr:`~dmr.metadata.EndpointMetadata.extras`.
+        Raises :exc:`~dmr.exceptions.EndpointMetadataError`
+        when *controller* does not use these extras.
+        """
+        if not isinstance(controller.extras, cls):
+            raise EndpointMetadataError(
+                f'{type(controller)!r} does not use {cls.__name__!r} extras',
+            )
+        method = controller.request.method
+        # for mypy: it can't be `None` at this point
+        assert method is not None  # noqa: S101
+        endpoint = controller.api_endpoints[method]
+        extras: _BuiltExtrasT_co = endpoint.metadata.extras
+        return extras
+
+
+_ExtrasT = TypeVar('_ExtrasT', bound=Extras[Any] | Sentinel, default=Sentinel)
+
+
+@final
+@dataclasses.dataclass(frozen=True, slots=True)
+class ModifyEndpoint(Generic[_ExtrasT]):
+    """
+    Decorator to modify endpoints that return raw model data.
+
+    Apply it to change some API parts:
+
+    .. code:: python
+
+        >>> from http import HTTPStatus
+        >>> from dmr import Controller, modify
+        >>> from dmr.plugins.pydantic import PydanticFastSerializer
+
+        >>> class TaskController(Controller[PydanticFastSerializer]):
+        ...     @modify(status_code=HTTPStatus.ACCEPTED)
+        ...     def post(self) -> list[int]:
+        ...         return [1, 2]  # id of tasks you have started
+
+    Args:
+        status_code: Shows *status_code* in the documentation.
+            When *status_code* is passed, always use it by default.
+            When not provided, we use smart inference
+            based on the HTTP method name for default returned response.
+        headers: Shows *headers* in the documentation.
+            When *headers* are passed we will
+            add them for the default response.
+        cookies: Shows *cookies* in the documentation.
+            When *cookies* are passed we will add
+            them for the default response.
+        validate_responses: Do we have to run runtime validation
+            of responses for this endpoint? Customizable via global setting,
+            per controller, and per endpoint.
+            Here we only store the per endpoint information.
+        exclude_validate_responses: Set of status codes that we don't
+            validate, even when ``validate_responses`` is enabled.
+            Useful for errors like ``500`` that can be raised
+            from anywhere and that you might not want to describe.
+            Overrides controller and settings values.
+            Set it to ``None`` to validate all status codes back.
+        semantic_schema: Should we generate any
+            semantic schema for this endpoint?
+        semantic_responses: Should semantic responses be collected
+            from different providers for this endpoint.
+        exclude_semantic_responses: Set of semantic responses status codes
+            that user wants to disable.
+            Overrides controller and settings values.
+            Set it to ``None`` to enable all semantic responses back.
+        semantic_auth: Should semantic auth be collected
+            from different providers for this endpoint.
+            Overrides controller and settings values.
+        exclude_semantic_auth: Set of semantic security requirements names
+            that should not be collected.
+            Overrides controller and settings values.
+        extra_responses: Sequence of extra responses
+            that this endpoint can return.
+            Overrides controller and settings values.
+            Set it to ``None`` to only use the default response.
+        no_validate_http_spec: Set of http spec validation checks
+            that we disable for this endpoint.
+            Overrides controller and settings values.
+            Set it to ``None`` to enable all checks back.
+        error_handler: Callback function to be called
+            when this endpoint faces an exception.
+        parsers: Sequence of types to be used for this endpoint
+            to parse incoming request's body. All types must be subtypes
+            of :class:`~dmr.parsers.Parser`.
+            Overrides controller and settings values.
+        renderers: Sequence of types to be used for this endpoint
+            to render response's body. All types must be subtypes
+            of :class:`~dmr.renderers.Renderer`.
+            Overrides controller and settings values.
+        validate_negotiation: Should we validate that returned response's
+            ``Content-Type`` header matches the one
+            that we inferred in the negotiation process?
+        auth: Sequence of auth instances to be used for this endpoint.
+            Sync endpoints must use instances
+            of :class:`dmr.security.SyncAuth`.
+            Async endpoints must use instances
+            of :class:`dmr.security.AsyncAuth`.
+            Overrides controller and settings values.
+            Set it to ``None`` to disable auth for this endpoint.
+        throttling: Sequence of throttle instances
+            to be used for this endpoint.
+            Sync endpoints must use instances
+            of :class:`dmr.throttling.SyncThrottle`.
+            Async endpoints must use instances
+            of :class:`dmr.throttling.AsyncThrottle`.
+            Overrides controller and settings values.
+            Set it to ``None`` to disable throttling of this endpoint.
+        summary: A short summary of what the operation does.
+            Defaults to the first paragraph of the endpoint's docstring.
+            Set it to ``None`` to have no summary at all.
+        description: A verbose explanation of the operation behavior.
+            Defaults to everything that goes after the first paragraph
+            of the endpoint's docstring.
+            Set it to ``None`` to have no description at all.
+        tags: A sequence of tags for API documentation control.
+            Used to group operations in OpenAPI documentation.
+            Overrides controller-level and router-level tags.
+            Set it to ``None`` to have no tags at all.
+        operation_id: Unique string used to identify the operation.
+        deprecated: Declares this operation to be deprecated.
+        external_docs: Additional external documentation for this operation.
+        callbacks: A map of possible out-of band callbacks related to the
+            parent operation. The key is a unique identifier
+            for the Callback Object. Each value in the map
+            is a Callback Object that describes
+            a request that may be initiated by the API provider and the
+            expected responses.
+        servers: An alternative servers sequence to service this operation.
+        links: Possible links to other OpenAPI operations.
+        response_description: Description for the generated response object.
+        ignore_from_spec: If set to ``True``, this endpoint
+            would not be added to the final OpenAPI spec.
+        extras: Extra settings for custom controllers.
+            See :ref:`modify-and-validate-with-extras` to learn more.
+
+    Returns:
+        The same function with ``__dmr_payload__`` payload instance.
+
+    .. warning::
+
+        Do not disable ``validate_responses`` unless
+        this is performance critical for you!
+
+    .. versionchanged:: 0.15.0
+        ``modify`` used to be a function, now it is an instance
+        with ``lazy`` method for lazy reusable endpoints.
+
+    .. versionchanged:: 0.16.0
+        Removed *validate_events* parameter, added *extras* parameter instead.
+        This class is now generic and public.
+
+    """
+
+    extras_cls: type[_ExtrasT] | Sentinel = EMPTY
+    """
+    Extras class that this decorator instance supports.
+
+    Pass it to create a typed decorator: ``ModifyEndpoint(MyExtras)``.
+    Controllers using such decorator must use the same extras class
+    in :attr:`~dmr.controller.Controller.extras`.
+    """
+
+    @overload
+    def __call__(  # pyright: ignore[reportOverlappingOverload]
+        self,
+        *,
+        error_handler: Sentinel = EMPTY,
+        status_code: HTTPStatus | Sentinel = EMPTY,
+        headers: Mapping[str, NewHeader | HeaderSpec] | Sentinel = EMPTY,
+        cookies: Mapping[str, NewCookie | CookieSpec] | Sentinel = EMPTY,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        extra_responses: Sequence[ResponseSpec] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: Sequence[Never] | Sentinel | None = EMPTY,
+        throttling: Sequence[Never] | Sentinel | None = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        links: Mapping[str, Link | Reference] | Sentinel = EMPTY,
+        response_description: str | Sentinel = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ModifyAnyCallable: ...
+
+    @overload
+    def __call__(
+        self,
+        *,
+        error_handler: AsyncErrorHandler | Sentinel = EMPTY,
+        status_code: HTTPStatus | Sentinel = EMPTY,
+        headers: Mapping[str, NewHeader | HeaderSpec] | Sentinel = EMPTY,
+        cookies: Mapping[str, NewCookie | CookieSpec] | Sentinel = EMPTY,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        extra_responses: Sequence[ResponseSpec] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: Sequence[AsyncAuth] | Sentinel | None = EMPTY,
+        throttling: Sequence[AsyncThrottle] | Sentinel | None = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        links: Mapping[str, Link | Reference] | Sentinel = EMPTY,
+        response_description: str | Sentinel = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ModifyAsyncCallable: ...
+
+    @overload
+    def __call__(
+        self,
+        *,
+        error_handler: SyncErrorHandler | Sentinel = EMPTY,
+        status_code: HTTPStatus | Sentinel = EMPTY,
+        headers: Mapping[str, NewHeader | HeaderSpec] | Sentinel = EMPTY,
+        cookies: Mapping[str, NewCookie | CookieSpec] | Sentinel = EMPTY,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        extra_responses: Sequence[ResponseSpec] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: Sequence[SyncAuth] | Sentinel | None = EMPTY,
+        throttling: Sequence[SyncThrottle] | Sentinel | None = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        links: Mapping[str, Link | Reference] | Sentinel = EMPTY,
+        response_description: str | Sentinel = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ModifySyncCallable: ...
+
+    def __call__(  # noqa: WPS211
+        self,
+        *,
+        status_code: HTTPStatus | Sentinel = EMPTY,
+        headers: Mapping[str, NewHeader | HeaderSpec] | Sentinel = EMPTY,
+        cookies: Mapping[str, NewCookie | CookieSpec] | Sentinel = EMPTY,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        extra_responses: Sequence[ResponseSpec] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        error_handler: SyncErrorHandler | AsyncErrorHandler | Sentinel = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: (
+            Sequence[AsyncAuth] | Sequence[SyncAuth] | Sentinel | None
+        ) = EMPTY,
+        throttling: (
+            Sequence[AsyncThrottle] | Sequence[SyncThrottle] | Sentinel | None
+        ) = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        links: Mapping[str, Link | Reference] | Sentinel = EMPTY,
+        response_description: str | Sentinel = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ModifyAsyncCallable | ModifySyncCallable | ModifyAnyCallable:
+        """Adds the payload to the endpoint function."""
+        from dmr.validation import ModifyEndpointPayload  # noqa: PLC0415
+
+        return _add_payload(  # type: ignore[return-value]
+            payload=ModifyEndpointPayload(
+                status_code=status_code,
+                headers=headers,
+                cookies=cookies,
+                responses=extra_responses,
+                validate_responses=validate_responses,
+                exclude_validate_responses=exclude_validate_responses,
+                semantic_schema=semantic_schema,
+                semantic_responses=semantic_responses,
+                exclude_semantic_responses=exclude_semantic_responses,
+                semantic_auth=semantic_auth,
+                exclude_semantic_auth=exclude_semantic_auth,
+                no_validate_http_spec=no_validate_http_spec,
+                error_handler=error_handler,
+                parsers=parsers,
+                renderers=renderers,
+                validate_negotiation=validate_negotiation,
+                security=EMPTY,  # TODO
+                auth=auth,
+                throttling=throttling,
+                summary=summary,
+                description=description,
+                tags=tags,
+                operation_id=operation_id,
+                deprecated=deprecated,
+                external_docs=external_docs,
+                callbacks=callbacks,
+                servers=servers,
+                links=links,
+                response_description=response_description,
+                ignore_from_spec=ignore_from_spec,
+                extras=extras,
+                extras_cls=self.extras_cls,  # type: ignore[arg-type]
+            ),
+        )
+
+    def lazy(
+        self,
+        provider: _CallableOrClassmethod[_ControllerT, _ModifyDecoratorT],
+    ) -> _ModifyDecoratorT:
+        """
+        Create lazy endpoint for reusable controller definition.
+
+        This provides an agile way to customize all the response details,
+        including headers and cookies spec, response status code,
+        OpenAPI metadata and other things.
+
+        See :ref:`lazy-reusable-endpoints` for the full example.
+
+        .. versionadded:: 0.15.0
+        """
+        return _lazy_payload(provider)
+
+
+#: Default instance of :class:`ModifyEndpoint` for regular controllers.
+modify: Final = ModifyEndpoint()
+
+
+class _ValidateCallable(Protocol):
+    """
+    Common base for all ``@validate`` decorator callables.
+
+    Serves as a nominal bound for ``@validate.lazy``: type checkers
+    must not structurally compare the sync / async / any protocols
+    against each other, since their generic ``__call__`` signatures
+    have incompatible type variable bounds.
+    """
+
+    # This is a typing-hack to make `@modify` and `@validate` decorators
+    # incompatible, so `@validate.lazy(modify_spec)` and vice a versa
+    # can't be used in a real code.
+    __dmr_fake_marker__: Literal['validate']
+
+
+class ValidateSyncCallable(_ValidateCallable, Protocol):
+    """
+    Type that represents ``@validate`` decorator for sync functions.
+
+    Features:
+
+    - Does not allow using anything other
+      than ``HttpResponse`` as the return annotation
+    - Does not allow applying the decorator on async endpoints
+
+    .. versionadded:: 0.15.0
+    """
+
+    def __call__(  # noqa: D102
+        self,
+        func: Callable[_ParamT, _SyncResponseT],
+        /,
+    ) -> Callable[_ParamT, _SyncResponseT]: ...
+
+
+class ValidateAsyncCallable(_ValidateCallable, Protocol):
+    """
+    Type that represents ``@validate`` decorator for async functions.
+
+    Features:
+
+    - Does not allow using anything other
+        than ``HttpResponse`` as the return annotation
+    - Does not allow applying the decorator on sync endpoints
+
+    .. versionadded:: 0.15.0
+    """
+
+    def __call__(  # noqa: D102
+        self,
+        func: Callable[_ParamT, _AsyncResponseT],
+        /,
+    ) -> Callable[_ParamT, _AsyncResponseT]: ...
+
+
+class ValidateAnyCallable(_ValidateCallable, Protocol):
+    """
+    Type that represents ``@modify`` decorator for any function.
+
+    Features:
+
+    - Does not allow using anything other
+        than ``HttpResponse`` as the return annotation
+    - Does not allow specifying sync / async specific parts
+
+    .. versionadded:: 0.15.0
+    """
+
+    def __call__(  # noqa: D102
+        self,
+        func: Callable[_ParamT, _AnyResponseT],
+        /,
+    ) -> Callable[_ParamT, _AnyResponseT]: ...
+
+
+_ValidateDecoratorT = TypeVar('_ValidateDecoratorT', bound=_ValidateCallable)
+
+
+@final
+@dataclasses.dataclass(frozen=True, slots=True)
+class ValidateEndpoint(Generic[_ExtrasT]):
+    """
+    Decorator to validate responses from endpoints that return ``HttpResponse``.
+
+    Apply it to validate important API parts:
+
+    .. code:: python
+
+        >>> from http import HTTPStatus
+        >>> from django.http import HttpResponse
+        >>> from dmr import Controller, validate, ResponseSpec
+        >>> from dmr.plugins.pydantic import PydanticFastSerializer
+
+        >>> class TaskController(Controller[PydanticFastSerializer]):
+        ...     @validate(
+        ...         ResponseSpec(
+        ...             return_type=list[int],
+        ...             status_code=HTTPStatus.OK,
+        ...         ),
+        ...     )
+        ...     def post(self) -> HttpResponse:
+        ...         return HttpResponse(b'[1, 2]', status=HTTPStatus.OK)
+
+    Response validation can be disabled for extra speed
+    by sending *validate_responses* falsy parameter
+    or by setting this configuration in your ``settings.py`` file:
+
+    .. code-block:: python
+        :caption: settings.py
+
+        >>> DMR_SETTINGS = {'validate_responses': False}
+
+    Args:
+        response: The main response that this endpoint is allowed to return.
+        responses: A collection of other responses that are allowed
+            to be returned from this endpoint.
+        validate_responses: Do we have to run runtime validation
+            of responses for this endpoint? Customizable via global setting,
+            per controller, and per endpoint.
+            Here we only store the per endpoint information.
+        exclude_validate_responses: Set of status codes that we don't
+            validate, even when ``validate_responses`` is enabled.
+            Useful for errors like ``500`` that can be raised
+            from anywhere and that you might not want to describe.
+            Overrides controller and settings values.
+            Set it to ``None`` to validate all status codes back.
+        semantic_schema: Should we generate any
+            semantic schema for this endpoint?
+        semantic_responses: Should semantic responses be collected
+            from different providers for this endpoint.
+            Overrides controller and settings values.
+        exclude_semantic_responses: Set of semantic responses status codes
+            that user wants to disable.
+            Overrides controller and settings values.
+            Set it to ``None`` to enable all semantic responses back.
+        semantic_auth: Should semantic auth be collected
+            from different providers for this endpoint.
+            Overrides controller and settings values.
+        exclude_semantic_auth: Set of semantic security requirements names
+            that should not be collected.
+            Overrides controller and settings values.
+        no_validate_http_spec: Set of http spec validation checks
+            that we disable for this endpoint.
+            Overrides controller and settings values.
+            Set it to ``None`` to enable all checks back.
+        error_handler: Callback function to be called
+            when this endpoint faces an exception.
+        parsers: Sequence of types to be used for this endpoint
+            to parse incoming request's body. All types must be subtypes
+            of :class:`~dmr.parsers.Parser`.
+            Overrides controller and settings values.
+        renderers: Sequence of types to be used for this endpoint
+            to render response's body. All types must be subtypes
+            of :class:`~dmr.renderers.Renderer`.
+            Overrides controller and settings values.
+        validate_negotiation: Should we validate that returned response's
+            ``Content-Type`` header matches the one
+            that we inferred in the negotiation process?
+        auth: Sequence of auth instances to be used for this endpoint.
+            Sync endpoints must use instances
+            of :class:`dmr.security.SyncAuth`.
+            Async endpoints must use instances
+            of :class:`dmr.security.AsyncAuth`.
+            Overrides controller and settings values.
+            Set it to ``None`` to disable auth for this endpoint.
+        throttling: Sequence of throttle instances to be used for this endpoint.
+            Sync endpoints must use instances
+            of :class:`dmr.throttling.SyncThrottle`.
+            Async endpoints must use instances
+            of :class:`dmr.throttling.AsyncThrottle`.
+            Overrides controller and settings values.
+            Set it to ``None`` to disable throttling of this endpoint.
+        summary: A short summary of what the operation does.
+            Defaults to the first paragraph of the endpoint's docstring.
+            Set it to ``None`` to have no summary at all.
+        description: A verbose explanation of the operation behavior.
+            Defaults to everything that goes after the first paragraph
+            of the endpoint's docstring.
+            Set it to ``None`` to have no description at all.
+        tags: A sequence of tags for API documentation control.
+            Used to group operations in OpenAPI documentation.
+            Overrides controller-level and router-level tags.
+            Set it to ``None`` to have no tags at all.
+        operation_id: Unique string used to identify the operation.
+        deprecated: Declares this operation to be deprecated.
+        external_docs: Additional external documentation for this operation.
+        callbacks: A map of possible out-of band callbacks related to the
+            parent operation. The key is a unique identifier for the Callback
+            Object. Each value in the map is a Callback Object that describes
+            a request that may be initiated by the API provider and the
+            expected responses.
+        servers: An alternative servers sequence to service this operation.
+        ignore_from_spec: If set to ``True``, this endpoint
+            would not be added to the final OpenAPI spec.
+        extras: Extra settings for custom controllers.
+            See :ref:`modify-and-validate-with-extras` to learn more.
+
+    Returns:
+        The same function with ``__dmr_payload__`` payload instance.
+
+    .. warning::
+        Do not disable ``validate_responses`` unless
+        this is performance critical for you!
+
+    .. versionchanged:: 0.15.0
+        ``validate`` used to be a function, now it is an instance
+        with ``lazy`` method for lazy reusable endpoints.
+
+    .. versionchanged:: 0.16.0
+        Removed *validate_events* parameter, added *extras* parameter instead.
+        This class is now generic and public.
+
+    """
+
+    extras_cls: type[_ExtrasT] | Sentinel = EMPTY
+    """
+    Extras class that this decorator instance supports.
+
+    Pass it to create a typed decorator: ``ValidateEndpoint(MyExtras)``.
+    Controllers using such decorator must use the same extras class
+    in :attr:`~dmr.controller.Controller.extras`.
+    """
+
+    @overload
+    def __call__(
+        self,
+        response: ResponseSpec,
+        /,
+        *responses: ResponseSpec,
+        error_handler: Sentinel = EMPTY,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: Sequence[Never] | Sentinel | None = EMPTY,
+        throttling: Sequence[Never] | Sentinel | None = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ValidateAnyCallable: ...
+
+    @overload
+    def __call__(  # pyright: ignore[reportOverlappingOverload]
+        self,
+        response: ResponseSpec,
+        /,
+        *responses: ResponseSpec,
+        error_handler: AsyncErrorHandler | Sentinel = EMPTY,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: Sequence[AsyncAuth] | Sentinel | None = EMPTY,
+        throttling: Sequence[AsyncThrottle] | Sentinel | None = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ValidateAsyncCallable: ...
+
+    @overload
+    def __call__(
+        self,
+        response: ResponseSpec,
+        /,
+        *responses: ResponseSpec,
+        error_handler: SyncErrorHandler | Sentinel = EMPTY,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: Sequence[SyncAuth] | Sentinel | None = EMPTY,
+        throttling: Sequence[SyncThrottle] | Sentinel | None = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ValidateSyncCallable: ...
+
+    def __call__(  # noqa: WPS211  # pyright: ignore[reportInconsistentOverload]
+        self,
+        response: ResponseSpec,
+        /,
+        *responses: ResponseSpec,
+        validate_responses: bool | Sentinel = EMPTY,
+        exclude_validate_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_schema: bool | Sentinel = EMPTY,
+        semantic_responses: bool | Sentinel = EMPTY,
+        exclude_semantic_responses: Set[HTTPStatus] | Sentinel | None = EMPTY,
+        semantic_auth: bool | Sentinel = EMPTY,
+        exclude_semantic_auth: Set[str] | Sentinel | None = EMPTY,
+        no_validate_http_spec: Set[HttpSpec] | Sentinel | None = EMPTY,
+        error_handler: SyncErrorHandler | AsyncErrorHandler | Sentinel = EMPTY,
+        parsers: Sequence[Parser] | Sentinel = EMPTY,
+        renderers: Sequence[Renderer] | Sentinel = EMPTY,
+        validate_negotiation: bool | Sentinel = EMPTY,
+        auth: (
+            Sequence[AsyncAuth] | Sequence[SyncAuth] | Sentinel | None
+        ) = EMPTY,
+        throttling: (
+            Sequence[AsyncThrottle] | Sequence[SyncThrottle] | Sentinel | None
+        ) = EMPTY,
+        summary: StrOrPromise | Sentinel | None = EMPTY,
+        description: StrOrPromise | Sentinel | None = EMPTY,
+        tags: Sequence[str] | Sentinel | None = EMPTY,
+        operation_id: str | Sentinel = EMPTY,
+        deprecated: bool = False,
+        external_docs: ExternalDocumentation | Sentinel = EMPTY,
+        callbacks: Mapping[str, Callback | Reference] | Sentinel = EMPTY,
+        servers: Sequence[Server] | Sentinel | None = EMPTY,
+        ignore_from_spec: bool | Sentinel = EMPTY,
+        extras: _ExtrasT | Sentinel = EMPTY,
+    ) -> ValidateAnyCallable | ValidateAsyncCallable | ValidateSyncCallable:
+        """Adds the payload to the endpoint function."""
+        from dmr.validation import ValidateEndpointPayload  # noqa: PLC0415
+
+        return _add_payload(  # type: ignore[return-value]
+            payload=ValidateEndpointPayload(
+                responses=[response, *responses],
+                validate_responses=validate_responses,
+                exclude_validate_responses=exclude_validate_responses,
+                semantic_schema=semantic_schema,
+                semantic_responses=semantic_responses,
+                exclude_semantic_responses=exclude_semantic_responses,
+                semantic_auth=semantic_auth,
+                exclude_semantic_auth=exclude_semantic_auth,
+                no_validate_http_spec=no_validate_http_spec,
+                error_handler=error_handler,
+                parsers=parsers,
+                renderers=renderers,
+                validate_negotiation=validate_negotiation,
+                security=EMPTY,  # TODO
+                auth=auth,
+                throttling=throttling,
+                summary=summary,
+                description=description,
+                tags=tags,
+                operation_id=operation_id,
+                deprecated=deprecated,
+                external_docs=external_docs,
+                callbacks=callbacks,
+                servers=servers,
+                ignore_from_spec=ignore_from_spec,
+                extras=extras,
+                extras_cls=self.extras_cls,  # type: ignore[arg-type]
+            ),
+        )
+
+    def lazy(
+        self,
+        provider: _CallableOrClassmethod[_ControllerT, _ValidateDecoratorT],
+    ) -> _ValidateDecoratorT:
+        """
+        Create lazy endpoint for reusable controller definition.
+
+        This provides an agile way to customize all the response details,
+        including headers and cookies spec, response status code,
+        OpenAPI metadata and other things.
+
+        See :ref:`lazy-reusable-endpoints` for the full example.
+
+        .. versionadded:: 0.15.0
+        """
+        return _lazy_payload(provider)
+
+
+#: Default instance of :class:`ValidateEndpoint` for regular controllers.
+validate: Final = ValidateEndpoint()
+
+
 @overload
 def request_endpoint(
     request: HttpRequest,
     *,
     strict: Literal[True],
-) -> 'Endpoint': ...
+) -> Endpoint: ...
 
 
 @overload
@@ -98,14 +1047,14 @@ def request_endpoint(
     request: HttpRequest,
     *,
     strict: bool = False,
-) -> 'Endpoint | None': ...
+) -> Endpoint | None: ...
 
 
 def request_endpoint(
     request: HttpRequest,
     *,
     strict: bool = False,
-) -> 'Endpoint | None':
+) -> Endpoint | None:
     """
     Return an instance of the ``Endpoint`` that was used for this request.
 
@@ -120,3 +1069,39 @@ def request_endpoint(
     if endpoint is None and strict:
         raise AttributeError('__dmr_endpoint__')
     return endpoint
+
+
+# Internal API:
+
+
+def _lazy_payload(
+    provider: _CallableOrClassmethod[_ControllerT, _ReturnT],
+) -> _ReturnT:
+    def factory(controller_cls: type[_ControllerT]) -> Any:
+        if isinstance(provider, classmethod):
+            return getattr(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+                controller_cls,
+                provider.__name__,
+                provider,  # pyright: ignore[reportUnknownArgumentType]
+            ).__func__(controller_cls)
+        return provider(controller_cls)
+
+    return _add_payload(payload=factory)  # type: ignore[return-value]
+
+
+def _add_payload(
+    *,
+    payload: (
+        ModifyEndpointPayload
+        | ValidateEndpointPayload
+        | Callable[[type[_ControllerT]], Any]
+    ),
+) -> Callable[[Callable[_ParamT, _ReturnT]], Callable[_ParamT, _ReturnT]]:
+    # Add payload for future use in the Endpoint creation.
+    def decorator(
+        func: Callable[_ParamT, _ReturnT],
+    ) -> Callable[_ParamT, _ReturnT]:
+        func.__dmr_payload__ = payload  # type: ignore[attr-defined]
+        return func
+
+    return decorator

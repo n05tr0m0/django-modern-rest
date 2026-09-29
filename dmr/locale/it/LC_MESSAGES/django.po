@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: django-modern-rest\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-12 16:52+0200\n"
+"POT-Creation-Date: 2026-09-12 09:02+0200\n"
 "PO-Revision-Date: 2026-07-11 19:25+0200\n"
 "Last-Translator: Stefano Fusai <stefanofusai@gmail.com>\n"
 "Language-Team: Italian\n"
@@ -46,6 +46,10 @@ msgstr "Troppe richieste"
 msgid "Internal server error"
 msgstr "Errore interno del server"
 
+#, python-brace-format
+msgid "CSRF Failed: {reason}"
+msgstr "Verifica CSRF non riuscita: {reason}"
+
 msgid ""
 "HTTP requests with the 'application/x-www-form-urlencoded' content type must "
 "be UTF-8 encoded."
@@ -77,9 +81,8 @@ msgstr ""
 "Impossibile analizzare il corpo della richiesta con tipo di contenuto "
 "{content_type}; tipo previsto: {expected}"
 
-#, python-brace-format
-msgid "CSRF Failed: {reason}"
-msgstr "Verifica CSRF non riuscita: {reason}"
+msgid "Invalid cursor"
+msgstr "Cursore non valido"
 
 msgid "BlocklistedJWToken"
 msgstr "Token JWT bloccato"

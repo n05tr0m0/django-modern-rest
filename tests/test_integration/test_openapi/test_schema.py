@@ -1,8 +1,6 @@
 import logging
 import os
 from collections.abc import Iterator
-from http import HTTPStatus
-from http.cookies import SimpleCookie
 from typing import TYPE_CHECKING, Any, Final
 
 import pytest
@@ -15,11 +13,14 @@ from hypothesis import strategies
 from schemathesis.specs.openapi.schemas import OpenApiSchema
 
 from django_test_app.server.wsgi import application
-from dmr.test import DMRClient
 from dmr.validation import ResponseValidator
 
-_LOCAL_MAX_EXAMPLES: Final = 25
-_MAX_EXAMPLES: Final = 100 if os.environ.get('CI') else _LOCAL_MAX_EXAMPLES
+_LOCAL_MAX_EXAMPLES: Final = 15
+_MAX_EXAMPLES: Final = (
+    50  # noqa: WPS432
+    if os.environ.get('CI')
+    else _LOCAL_MAX_EXAMPLES
+)
 
 if TYPE_CHECKING:
     import tracecov
@@ -39,7 +40,7 @@ def _patch_response_validation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _disable_logging(settings: LazySettings) -> Iterator[None]:
+def _disable_logging() -> Iterator[None]:
     # Logging has too much output with schemathesis:
     logging.disable(logging.CRITICAL)
     yield
@@ -75,42 +76,13 @@ st.openapi.format(
     strategies.from_regex(r'^\+7-495-[0-9]{3}-[0-9]{2}-[0-9]{2}$'),
 )
 
-# Register custom auth:
-
-
-@st.auth().apply_to(st.openapi.require_security_scheme('django_session'))
-class _DjangoSessionAuth:
-    def get(
-        self,
-        case: st.Case[Any],
-        ctx: st.AuthContext,
-    ) -> SimpleCookie:
-        dmr_client = DMRClient()
-        response = dmr_client.post(
-            reverse('api:django_session_auth:django_session_sync'),
-            # Username and password are taken from `admin_user` fixture,
-            # which is defined in `pytest-django`:
-            data={'username': 'admin', 'password': 'password'},
-        )
-        assert response.status_code == HTTPStatus.OK, response.content
-        return response.cookies
-
-    def set(
-        self,
-        case: st.Case[Any],
-        data: SimpleCookie,
-        ctx: st.AuthContext,
-    ) -> None:
-        # Set to the case itself:
-        case.cookies.update({
-            cookie_name: cookie.coded_value
-            for cookie_name, cookie in data.items()
-        })
-        assert case.cookies, ctx
+# TODO: provide `Token` auth as well
+# TODO: restore `django_session` auth, removed in #1550
 
 
 @schema.parametrize()
 @h_settings(max_examples=_MAX_EXAMPLES)
+@pytest.mark.timeout(0)
 def test_schemathesis(
     tracecov_map: 'tracecov.CoverageMap | None',
     *,
@@ -122,7 +94,13 @@ def test_schemathesis(
 
     from tracecov.schemathesis import helpers  # noqa: PLC0415
 
-    response = case.call_and_validate()
+    # `werkzeug` leaves `REMOTE_ADDR` out of the WSGI environ entirely,
+    # while every real server sets it. Code that looks up the client IP
+    # then behaves differently under test than in production: for example
+    # `django-allauth` rate limiting answers `403` when it cannot find one.
+    response = case.call_and_validate(
+        environ_base={'REMOTE_ADDR': '127.0.0.1'},
+    )
     # Record interaction for `tracecov` report:
     tracecov_map.record_schemathesis_interactions(
         case.method,

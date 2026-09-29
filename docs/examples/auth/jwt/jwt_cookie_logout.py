@@ -1,0 +1,16 @@
+from django.urls import reverse_lazy
+
+from dmr.plugins.pydantic import PydanticFastSerializer
+from dmr.security.jwt.views import CookieLogoutSyncController
+
+
+# You can also use `CookieLogoutAsyncController` if needed:
+class LogoutCookiesSyncController(
+    CookieLogoutSyncController[PydanticFastSerializer],
+):
+    # Both cookies are dropped, so this must match the refresh controller:
+    jwt_refresh_cookie_path = reverse_lazy('api:jwt_refresh')
+
+
+# run: {"controller": "LogoutCookiesSyncController", "method": "post", "url": "/api/auth/logout/", "url_names": {"api:jwt_refresh": "/api/auth/refresh/"}, "cookies": {"csrftoken": "$CSRF_TOKEN"}, "headers": {"X-CSRFToken": "$CSRF_TOKEN"}, "curl_args": ["-D", "-"]}  # noqa: ERA001, E501
+# openapi: {"controller": "LogoutCookiesSyncController", "openapi_url": "/docs/openapi.json/"}  # noqa: ERA001, E501

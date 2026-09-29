@@ -34,8 +34,10 @@ we run :class:`~dmr.endpoint.Endpoint` validation.
 
 Here we can detect all kinds of problems with how endpoints are defined:
 
-- Invalid :func:`~dmr.endpoint.modify`
-  or :func:`~dmr.endpoint.validate` usage
+- Invalid :data:`~dmr.endpoint.modify`
+  or :data:`~dmr.endpoint.validate` usage
+- Invalid component annotations, like ``parsed_body: Body[Model] | None``,
+  see :ref:`component-defaults`
 - Or invalid :class:`~dmr.settings.HttpSpec` usage
 
 See :class:`~dmr.validation.endpoint_metadata.EndpointMetadataBuilder`
@@ -130,6 +132,9 @@ Endpoint
 .. autoclass:: dmr.validation.endpoint_metadata.EndpointMetadataValidator
   :members:
 
+.. autoclass:: dmr.validation.metadata_merger.MetadataMerger
+  :members:
+
 Controller
 ~~~~~~~~~~
 
@@ -140,7 +145,4 @@ Response
 ~~~~~~~~
 
 .. autoclass:: dmr.validation.response.ResponseValidator
-  :members:
-
-.. autoclass:: dmr.validation.response.ValidatedModification
   :members:

@@ -1,16 +1,21 @@
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-try:
+try:  # noqa: WPS229
     import pytest
+    import pytest_django  # noqa: F401  # pyright: ignore[reportUnusedImport]
 except ImportError:  # pragma: no cover
     print(  # noqa: WPS421
-        'Looks like `pytest` is not installed, please install it separately',
+        (
+            'Looks like `pytest` or `pytest-django` is not installed, '
+            'please install it separately'
+        ),
     )
     raise
 
 if TYPE_CHECKING:
     # We can't import it directly, because it will ruin our coverage measures.
+
     from django.conf import LazySettings
 
     from dmr.test import (
@@ -19,6 +24,9 @@ if TYPE_CHECKING:
         DMRClient,
         DMRRequestFactory,
     )
+
+
+# Building requests:
 
 
 @pytest.fixture
@@ -57,6 +65,9 @@ def dmr_async_rf() -> 'DMRAsyncRequestFactory':
     from dmr.test import DMRAsyncRequestFactory
 
     return DMRAsyncRequestFactory()
+
+
+# Settings:
 
 
 @pytest.fixture

@@ -7,9 +7,9 @@ msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-04-17 08:59+0300\n"
+"POT-Creation-Date: 2026-09-12 09:02+0200\n"
 "PO-Revision-Date: 2026-04-13 19:20+0500\n"
-"Last-Translator: \n"
+"Last-Translator: Abduaziz Ziyodov\n"
 "Language-Team: Uzbek\n"
 "Language: uz\n"
 "MIME-Version: 1.0\n"
@@ -22,62 +22,67 @@ msgid ""
 "Path {cls} with field_model={field_model} does not allow unnamed path "
 "parameters args={args}"
 msgstr ""
-"field_model={field_model} bilan {cls} yo'li nomsiz path parametrlari "
-"args={args} ga ruxsat bermaydi"
+"field_model={field_model} bilan {cls} yo'li, nomsiz yo'l parametrlariga "
+"ruxsat bermaydi args={args}"
 
 #, python-brace-format
 msgid ""
 "Trying to parse files with {parser_name} that does not support "
 "SupportsFileParsing protocol"
 msgstr ""
-"SupportsFileParsing protokolini qo'llamaydigan {parser_name} yordamida "
-"fayllarni tahlil qilishga urinish"
+"SupportsFileParsing protokolini qo'llab-quvvatlamaydigan {parser_name} "
+"parser'i yordamida fayllarni tahlil qilishga urinilmoqda"
 
 #, python-brace-format
 msgid "Method {method} is not allowed, allowed: {allowed}"
 msgstr "{method} metodiga ruxsat berilmagan, ruxsat etilganlari: {allowed}"
 
 msgid "Not authenticated"
-msgstr "Autentifikatsiyadan o'tilmagan"
+msgstr "Autentifikatsiya qilinmagan"
 
 msgid "Too many requests"
 msgstr "So'rovlar soni juda ko'p"
 
 msgid "Internal server error"
-msgstr "Serverning ichki xatosi"
+msgstr "Ichki server xatosi"
+
+#, python-brace-format
+msgid "CSRF Failed: {reason}"
+msgstr "CSRF tekshiruvi muvaffaqiyatsiz tugadi: {reason}"
 
 msgid ""
 "HTTP requests with the 'application/x-www-form-urlencoded' content type must "
 "be UTF-8 encoded."
 msgstr ""
-"'application/x-www-form-urlencoded' content type ga ega HTTP so'rovlari "
-"UTF-8 da kodlangan bo'lishi kerak."
+"'application/x-www-form-urlencoded' kontent turiga ega HTTP so'rovlar UTF-8 "
+"orqali kodlangan bo'lishi kerak."
 
 #, python-brace-format
 msgid ""
 "Negotiated renderer {renderer_type} does not match returned content-type "
 "{content_type}"
 msgstr ""
+"Tanlangan renderchi {renderer_type} qaytarilgan {content_type} kontent "
+"turiga mos kelmaydi "
 
 #, python-brace-format
 msgid ""
 "Cannot serialize response body with accepted types {accepted_types}, "
 "supported={supported}"
 msgstr ""
-"Response body ni qabul qilingan {accepted_types} turlari bilan "
-"serializatsiya qilib bo'lmaydi, qo'llab-quvvatlanadiganlari: {supported}"
+"Javob matnini kelishilgan {accepted_types} turlari bilan serializatsiya "
+"qilib bo'lmaydi, qo'llab-quvvatlanganlari: {supported}"
 
 #, python-brace-format
 msgid ""
 "Cannot parse request body with content type {content_type}, "
 "expected={expected}"
 msgstr ""
-"{content_type} content type li request body ni parse qilib bo'lmaydi, "
-"kutilgani: {expected}"
+"{content_type} kontent turiga ega so'rov matnini tahlil qilib bo'lmadi, "
+"kutilgan edi: {expected}"
 
-#, python-brace-format
-msgid "CSRF Failed: {reason}"
-msgstr "CSRF muvaffaqiyatsiz tugadi: {reason}"
+msgid "Invalid cursor"
+msgstr "Noto'g'ri kursor"
 
 msgid "BlocklistedJWToken"
 msgstr "Bloklangan JWToken"
@@ -85,7 +90,34 @@ msgstr "Bloklangan JWToken"
 msgid "BlocklistedJWTokens"
 msgstr "Bloklangan JWT tokenlar"
 
+msgid "Name"
+msgstr "Nomi"
+
+msgid "Token hash"
+msgstr "Token xesh"
+
+msgid "Expires at"
+msgstr "Muddati"
+
+msgid "Revoked at"
+msgstr "Bekor qilingan vaqti"
+
+msgid "Last used at"
+msgstr "Oxirgi marotaba foydalanilgan vaqti"
+
+msgid "Created at"
+msgstr "Yaratilgan vaqti"
+
+msgid "Updated at"
+msgstr "Yangilangan vaqti"
+
+msgid "Token"
+msgstr "Token"
+
+msgid "Tokens"
+msgstr "Tokenlar"
+
 #, python-brace-format
 msgid "Value {value} of type {type} is not supported for {target_type}"
 msgstr ""
-"{type} turidagi {value} qiymati {target_type} uchun qo'llab-quvvatlanmaydi"
+"{type} turidagi {value} qiymati, {target_type} uchun qo'llab-quvvatlanmaydi"

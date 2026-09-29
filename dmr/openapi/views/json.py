@@ -2,7 +2,7 @@ from typing import ClassVar
 
 from django.http import HttpRequest, HttpResponse
 
-from dmr.openapi.dump import json_dump
+from dmr.openapi.dump import json_dumps
 from dmr.openapi.views.base import OpenAPIView
 
 
@@ -10,7 +10,7 @@ class OpenAPIJsonView(OpenAPIView):
     """
     View for returning the OpenAPI schema as JSON.
 
-    Produces a JSON representation of the :class:`~dmr.openapi.objects.OpenAPI`
+    Produces a JSON representation of the :class:`~dmr.openapi.openapi.OpenAPI`
     specification that can be used by API documentation tools
     and client code generators.
 
@@ -25,7 +25,7 @@ class OpenAPIJsonView(OpenAPIView):
     def get(self, request: HttpRequest) -> HttpResponse:
         """Render the OpenAPI schema as JSON response."""
         return HttpResponse(
-            content=json_dump(
+            content=json_dumps(
                 self.schema.convert(skip_validation=self.skip_validation),
             ),
             content_type=self.content_type,

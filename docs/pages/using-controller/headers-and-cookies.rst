@@ -19,7 +19,7 @@ and ``required=False`` headers (might be missing in some cases):
   :caption: views.py
   :language: python
   :linenos:
-  :emphasize-lines: 29-32
+  :emphasize-lines: 20-23
 
 .. note::
 
@@ -38,7 +38,7 @@ with known values to the final response.
   :caption: views.py
   :language: python
   :linenos:
-  :emphasize-lines: 20
+  :emphasize-lines: 14
 
 If you need headers with not static, but dynamic values, use "real endpoints"
 and pass ``headers`` dict to
@@ -83,7 +83,7 @@ of endpoints to describe response cookies.
   :caption: views.py
   :language: python
   :linenos:
-  :emphasize-lines: 16
+  :emphasize-lines: 14
 
 And you can set any cookies to :attr:`django.http.HttpResponse.cookies`
 with "real endpoints". Since we have strict schemas,
@@ -94,7 +94,22 @@ it is required to describe the set cookies with
   :caption: views.py
   :language: python
   :linenos:
-  :emphasize-lines: 23-24
+  :emphasize-lines: 21-22
+
+.. tip::
+
+  A response cookie must match its spec exactly, so keeping the flags
+  in two places is a source of bugs. Build the cookie from its spec with
+  :meth:`NewCookie.from_spec <dmr.cookies.NewCookie.from_spec>`
+  when only the value is known in runtime:
+
+  .. code:: python
+
+    >>> from dmr import CookieSpec, NewCookie
+
+    >>> session_spec = CookieSpec(httponly=True, secure=True)
+    >>> NewCookie.from_spec(session_spec, value='abc')
+    NewCookie(path='/', max_age=None, ..., value='abc')
 
 The last important thing about cookies
 is :attr:`~dmr.cookies.CookieSpec.skip_validation` attribute.

@@ -511,7 +511,7 @@ def test_validate_sync_error_handler_for_async() -> None:
             ) -> HttpResponse:
                 raise NotImplementedError
 
-            @validate(  # type: ignore[arg-type]
+            @validate(  # type: ignore[type-var]
                 ResponseSpec(list[int], status_code=HTTPStatus.OK),
                 error_handler=wrap_handler(endpoint_error),
             )
@@ -532,7 +532,7 @@ def test_validate_async_endpoint_error_for_sync() -> None:
             ) -> HttpResponse:
                 raise NotImplementedError
 
-            @validate(  # type: ignore[arg-type]
+            @validate(  # type: ignore[type-var]
                 ResponseSpec(list[int], status_code=HTTPStatus.OK),
                 error_handler=wrap_handler(async_endpoint_error),
             )
@@ -548,7 +548,10 @@ def test_validate_async_endpoint_error_for_sync() -> None:
         'SET-COOKIE',
     ],
 )
-def test_validate_with_set_cookie_header(header_name: str) -> None:
+def test_validate_with_set_cookie_header(
+    *,
+    header_name: str,
+) -> None:
     """@validate with Set-Cookie in ResponseSpec.headers should raise error."""
     with pytest.raises(EndpointMetadataError, match='Set-Cookie'):
 

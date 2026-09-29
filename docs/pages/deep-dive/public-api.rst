@@ -20,11 +20,50 @@ Endpoint
 .. autoclass:: dmr.metadata.EndpointMetadata
   :members:
 
-.. autodecorator:: dmr.endpoint.modify
+.. autofunction:: dmr.endpoint.request_endpoint
 
-.. autodecorator:: dmr.endpoint.validate
+Modify
+~~~~~~
 
-.. autodecorator:: dmr.endpoint.request_endpoint
+.. autoclass:: dmr.endpoint.ModifyEndpoint
+  :members:
+
+.. autodata:: dmr.endpoint.modify
+
+Validate
+~~~~~~~~
+
+.. autoclass:: dmr.endpoint.ValidateEndpoint
+  :members:
+
+.. autodata:: dmr.endpoint.validate
+
+Extras
+~~~~~~
+
+.. autoclass:: dmr.endpoint.Extras
+  :members:
+
+Lazy endpoints
+~~~~~~~~~~~~~~
+
+.. autoclass:: dmr.endpoint.ModifySyncCallable
+  :members:
+
+.. autoclass:: dmr.endpoint.ModifyAsyncCallable
+  :members:
+
+.. autoclass:: dmr.endpoint.ModifyAnyCallable
+  :members:
+
+.. autoclass:: dmr.endpoint.ValidateSyncCallable
+  :members:
+
+.. autoclass:: dmr.endpoint.ValidateAsyncCallable
+  :members:
+
+.. autoclass:: dmr.endpoint.ValidateAnyCallable
+  :members:
 
 
 Response, headers and cookies
@@ -37,6 +76,9 @@ Response, headers and cookies
   :members:
 
 .. autoclass:: dmr.metadata.ResponseSpecMetadata
+  :members:
+
+.. autoclass:: dmr.metadata.MergeableMetadata
   :members:
 
 .. autoclass:: dmr.metadata.ResponseModification
@@ -71,6 +113,9 @@ Validation
 .. autoclass:: dmr.validation.ValidateEndpointPayload
   :members:
 
+.. autoclass:: dmr.validation.payload.PayloadBuilder
+  :members:
+
 
 .. _serializer:
 
@@ -89,7 +134,21 @@ Serialization
 .. autoclass:: dmr.serializer.BaseSchemaGenerator
   :members:
 
+.. autoclass:: dmr.serializer.ContextField
+  :members:
+
+.. autoclass:: dmr.serializer.ContextModel
+  :members:
+
+.. autofunction:: dmr.serializer.context_field_tuples
+
 .. autoclass:: dmr.components.ComponentParserBuilder
+  :members:
+
+.. autoclass:: dmr.components.ComponentParserSpec
+  :members:
+
+.. autoclass:: dmr.components.FunctionDefaults
   :members:
 
 
@@ -104,6 +163,10 @@ Routing
 .. autofunction:: dmr.routing.build_500_handler
 
 .. autofunction:: dmr.routing.path
+
+.. autofunction:: dmr.routing.external_path
+
+.. autofunction:: dmr.routing.external_re_path
 
 
 Meta mixins
@@ -173,6 +236,8 @@ Utilities
 .. autoclass:: dmr.types.TypeVarInference
   :members:
 
+.. autofunction:: dmr.types.safe_typevar
+
 
 Decorators
 ----------
@@ -182,6 +247,37 @@ Decorators
 .. autofunction:: dmr.decorators.endpoint_decorator
 
 .. autofunction:: dmr.decorators.wrap_middleware
+
+
+Security
+--------
+
+CSRF
+~~~~
+
+.. autoclass:: dmr.security.csrf.CSRFSemanticSchemaProvider
+  :members:
+
+.. autofunction:: dmr.security.csrf.build_csrf_handler
+
+.. autofunction:: dmr.security.csrf.csrf_message
+
+.. autofunction:: dmr.security.csrf.csrf_response_spec
+
+.. autofunction:: dmr.security.csrf.csrf_security_scheme
+
+.. autoclass:: dmr.security.csrf.CSRFAuthMixin
+  :members:
+
+
+Semantic schema
+---------------
+
+.. autoclass:: dmr.semantic_schema.AuthProvider
+  :members:
+
+.. autoclass:: dmr.semantic_schema.ResponseValidationSpecProvider
+  :members:
 
 
 Testing
@@ -198,6 +294,22 @@ Testing
 
 .. autoclass:: dmr.test.DMRAsyncClient
   :members:
+
+Auth
+~~~~
+
+.. autofunction:: dmr.test.disabled_auth
+
+Throttling
+~~~~~~~~~~
+
+.. autofunction:: dmr.test.reduced_throttling
+
+.. autofunction:: dmr.test.assert_throttled
+
+.. autofunction:: dmr.test.assert_throttling
+
+.. autofunction:: dmr.test.assert_async_throttling
 
 
 Plugins
@@ -218,6 +330,9 @@ Pydantic
 .. autoclass:: dmr.plugins.pydantic.schema.PydanticSchemaGenerator
   :members:
 
+.. autoclass:: dmr.plugins.pydantic.schema.JsonSchemaKwargs
+  :members:
+
 .. autoclass:: dmr.plugins.pydantic.serializer.ToJsonKwargs
   :members:
 
@@ -233,6 +348,9 @@ Msgspec
 .. autoclass:: dmr.plugins.msgspec.serializer.MsgspecEndpointOptimizer
   :members:
 
+.. autoclass:: dmr.plugins.msgspec.schema.JsonSchemaKwargs
+  :members:
+
 .. autoclass:: dmr.plugins.msgspec.schema.MsgspecSchemaGenerator
   :members:
 
@@ -240,4 +358,207 @@ Msgspec
   :members:
 
 .. autoclass:: dmr.plugins.msgspec.serializer.ToModelKwargs
+  :members:
+
+
+.. _openapi-reference:
+
+OpenAPI
+-------
+
+Main OpenAPI object:
+
+.. autoclass:: dmr.openapi.openapi.OpenAPI
+  :members:
+
+Parts:
+
+.. autoclass:: dmr.openapi.objects.Callback
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Components
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Contact
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Discriminator
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Encoding
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Example
+  :members:
+
+.. autoclass:: dmr.openapi.objects.ExternalDocumentation
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Header
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Info
+  :members:
+
+.. autoclass:: dmr.openapi.objects.License
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Link
+  :members:
+
+.. autoclass:: dmr.openapi.objects.MediaTypeMetadata
+  :members:
+
+.. autoclass:: dmr.openapi.objects.MediaType
+  :members:
+
+.. autoclass:: dmr.openapi.objects.OAuthFlow
+  :members:
+
+.. autoclass:: dmr.openapi.objects.OAuthFlows
+  :members:
+
+.. autoclass:: dmr.openapi.objects.OpenAPIFormat
+  :members:
+
+.. autoclass:: dmr.openapi.objects.OpenAPIType
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Operation
+  :members:
+
+.. autoclass:: dmr.openapi.objects.ParameterMetadata
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Parameter
+  :inherited-members:
+  :show-inheritance:
+  :members:
+
+.. autodata:: dmr.openapi.objects.ParameterLocation
+
+.. autoclass:: dmr.openapi.objects.PathItem
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Paths
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Reference
+  :members:
+
+.. autoclass:: dmr.openapi.objects.RequestBody
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Response
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Responses
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Schema
+  :members:
+
+.. autoclass:: dmr.openapi.objects.SecurityRequirement
+  :members:
+
+.. autoclass:: dmr.openapi.objects.SecurityScheme
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Server
+  :members:
+
+.. autoclass:: dmr.openapi.objects.ServerVariable
+  :members:
+
+.. autoclass:: dmr.openapi.objects.Tag
+  :members:
+
+.. autoclass:: dmr.openapi.objects.XML
+  :members:
+
+.. autodata:: dmr.openapi.objects.XMLNodeType
+
+
+OpenAPI Core
+~~~~~~~~~~~~
+
+.. autoclass:: dmr.openapi.core.merger.ConfigMerger
+  :members:
+
+.. autoclass:: dmr.openapi.core.registry.OperationIdRegistry
+  :members:
+
+.. autoclass:: dmr.openapi.core.registry.SchemaRegistry
+  :members:
+
+.. autoclass:: dmr.openapi.core.registry.SecuritySchemeRegistry
+  :members:
+
+
+OpenAPI Generators
+~~~~~~~~~~~~~~~~~~
+
+.. autoclass:: dmr.openapi.generators.ComponentParserGenerator
+   :members:
+
+.. autoclass:: dmr.openapi.generators.component_parsers.ConverterSchema
+   :members:
+
+.. autoclass:: dmr.openapi.generators.ResponseGenerator
+   :members:
+
+.. autoclass:: dmr.openapi.generators.schema.LoadedSchema
+   :members:
+
+.. autoclass:: dmr.openapi.generators.SchemaGenerator
+   :members:
+
+.. autoclass:: dmr.openapi.generators.SecuritySchemeGenerator
+   :members:
+
+.. autoclass:: dmr.openapi.generators.OperationIdGenerator
+   :members:
+
+.. autoclass:: dmr.openapi.generators.ParameterGenerator
+   :members:
+
+
+Collectors
+~~~~~~~~~~
+
+.. autoclass:: dmr.openapi.collector.InternalRouteMetadata
+  :members:
+  :inherited-members:
+
+.. autoclass:: dmr.openapi.collector.ExternalRouteMetadata
+  :members:
+  :inherited-members:
+
+
+Existing OpenAPI views
+~~~~~~~~~~~~~~~~~~~~~~
+
+Existing implementations:
+
+.. autoclass:: dmr.openapi.views.ScalarView
+  :members:
+
+.. autoclass:: dmr.openapi.views.SwaggerView
+  :members:
+
+.. autoclass:: dmr.openapi.views.RedocView
+  :members:
+
+.. autoclass:: dmr.openapi.views.StoplightView
+  :members:
+
+.. autoclass:: dmr.openapi.views.OpenAPIJsonView
+  :members:
+
+.. autoclass:: dmr.openapi.views.yaml.OpenAPIYamlView
+  :members:
+
+Base classes:
+
+.. autoclass:: dmr.openapi.views.base.OpenAPIView
   :members:

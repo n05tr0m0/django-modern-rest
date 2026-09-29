@@ -1,226 +1,92 @@
 import json
+from collections.abc import Callable
 from http import HTTPStatus
-from typing import final
+from typing import TYPE_CHECKING, Final
 
 import pytest
-from django.conf import settings
+from django.conf import LazySettings
 from django.contrib.auth.models import User
-from django.http import HttpResponse
-from inline_snapshot import snapshot
+from django.http import HttpRequest, HttpResponse
 
 from dmr import Controller
 from dmr.plugins.pydantic import PydanticFastSerializer
-from dmr.security.token import CookieTokenAsyncAuth, CookieTokenSyncAuth
-from dmr.security.token.logic import token_acreate, token_create
+from dmr.security import request_auth
+from dmr.security.token import (
+    CookieTokenAsyncAuth,
+    CookieTokenSyncAuth,
+    HeaderTokenAsyncAuth,
+    HeaderTokenSyncAuth,
+)
+from dmr.security.token.app.models import Token
 from dmr.test import DMRAsyncRequestFactory, DMRRequestFactory
+
+if TYPE_CHECKING:
+    from tests.test_unit.conftest import CsrfFailureAssertion
+
+_CORRECT_TEMPLATE: Final = '{0}'
 
 
 @pytest.mark.django_db
-def test_cookie_token_sync_auth_success(
+@pytest.mark.parametrize(
+    ('cookie_name', 'cookie_value', 'expected_status'),
+    [
+        ('token', 'not-a-token', HTTPStatus.UNAUTHORIZED),
+        ('token', 'Prefix {0}', HTTPStatus.UNAUTHORIZED),
+        ('token', 'Bearer {0}', HTTPStatus.UNAUTHORIZED),
+        ('wrong', _CORRECT_TEMPLATE, HTTPStatus.UNAUTHORIZED),
+        ('token', _CORRECT_TEMPLATE, HTTPStatus.OK),
+    ],
+)
+def test_cookie_token_sync_auth_safe(
     dmr_rf: DMRRequestFactory,
     admin_user: User,
+    *,
+    cookie_name: str,
+    cookie_value: str,
+    expected_status: HTTPStatus,
 ) -> None:
     """Ensures CookieTokenSyncAuth reads the token from a cookie."""
 
-    @final
     class _CookieController(Controller[PydanticFastSerializer]):
         auth = (CookieTokenSyncAuth(),)
 
         def get(self) -> str:
             return 'authed'
 
-    _, raw_token = token_create(
+    _, raw_token = Token.issue(
         user=admin_user,
         name='cookie-test',
     )
     request = dmr_rf.get('/whatever/')
-    request.COOKIES['token'] = raw_token
+    request.COOKIES[cookie_name] = cookie_value.format(raw_token)
 
     response = _CookieController.as_view()(request)
 
     assert isinstance(response, HttpResponse)
-    assert response.status_code == HTTPStatus.OK
+    assert response.status_code == expected_status
 
 
-@pytest.mark.django_db
-def test_cookie_token_sync_auth_missing_cookie(
-    dmr_rf: DMRRequestFactory,
-) -> None:
-    """Ensures CookieTokenSyncAuth returns 401 when the cookie is absent."""
-
-    @final
-    class _CookieController(Controller[PydanticFastSerializer]):
-        auth = (CookieTokenSyncAuth(),)
-
-        def get(self) -> str:  # pragma: no cover
-            return 'authed'
-
-    request = dmr_rf.get('/whatever/')
-
-    response = _CookieController.as_view()(request)
-
-    assert isinstance(response, HttpResponse)
-    assert response.status_code == HTTPStatus.UNAUTHORIZED
-
-
-@pytest.mark.asyncio
-@pytest.mark.django_db(transaction=True)
-async def test_async_cookie_token_auth_success(
-    dmr_async_rf: DMRAsyncRequestFactory,
-    admin_user: User,
-) -> None:
-    """Ensures CookieTokenAsyncAuth reads the token from a cookie."""
-
-    @final
-    class _AsyncCookieController(Controller[PydanticFastSerializer]):
-        auth = (CookieTokenAsyncAuth(),)
-
-        async def get(self) -> str:
-            return 'authed'
-
-    _, raw_token = await token_acreate(
-        user=admin_user,
-        name='async-cookie-test',
-    )
-    request = dmr_async_rf.get('/whatever/')
-    request.COOKIES['token'] = raw_token
-
-    response = await dmr_async_rf.wrap(
-        _AsyncCookieController.as_view()(request),
-    )
-
-    assert isinstance(response, HttpResponse)
-    assert response.status_code == HTTPStatus.OK
-
-
-@pytest.mark.asyncio
-@pytest.mark.django_db(transaction=True)
-async def test_async_cookie_token_auth_missing_cookie(
-    dmr_async_rf: DMRAsyncRequestFactory,
-) -> None:
-    """Ensures CookieTokenAsyncAuth returns 401 when the cookie is absent."""
-
-    @final
-    class _AsyncCookieController(Controller[PydanticFastSerializer]):
-        auth = (CookieTokenAsyncAuth(),)
-
-        async def get(self) -> str:  # pragma: no cover
-            return 'authed'
-
-    request = dmr_async_rf.get('/whatever/')
-
-    response = await dmr_async_rf.wrap(
-        _AsyncCookieController.as_view()(request),
-    )
-
-    assert isinstance(response, HttpResponse)
-    assert response.status_code == HTTPStatus.UNAUTHORIZED
-
-
-@pytest.mark.django_db
-def test_sync_cookie_token_auth_csrf_enforced(
-    admin_user: User,
-) -> None:
-    """Ensures CookieTokenSyncAuth rejects POST without a CSRF token."""
-
-    @final
-    class _CookieController(Controller[PydanticFastSerializer]):
-        auth = (CookieTokenSyncAuth(),)
-
-        def post(self) -> str:  # pragma: no cover
-            # CSRF validation happens during auth, before route execution.
-            # This method should never be reached on CSRF-invalid requests.
-            return 'authed'
-
-    _, raw_token = token_create(
-        user=admin_user,
-        name='cookie-csrf-test',
-    )
-    csrf_rf = DMRRequestFactory()
-    request = csrf_rf.post('/whatever/')
-    request.COOKIES['token'] = raw_token
-    assert settings.CSRF_COOKIE_NAME not in request.COOKIES
-
-    response = _CookieController.as_view()(request)
-
-    assert isinstance(response, HttpResponse)
-    assert response.status_code == HTTPStatus.FORBIDDEN
-    assert json.loads(response.content) == snapshot({
-        'detail': [
-            {
-                'msg': 'CSRF Failed: CSRF cookie not set.',
-            },
-        ],
-    })
-
-
-@pytest.mark.asyncio
-@pytest.mark.django_db(transaction=True)
-async def test_async_cookie_token_auth_csrf_enforced(
-    admin_user: User,
-) -> None:
-    """Ensures CookieTokenAsyncAuth rejects POST without a CSRF token."""
-
-    @final
-    class _AsyncCookieController(Controller[PydanticFastSerializer]):
-        auth = (CookieTokenAsyncAuth(),)
-
-        async def post(self) -> str:  # pragma: no cover
-            # CSRF validation happens during auth, before route execution.
-            # This method should never be reached on CSRF-invalid requests.
-            return 'authed'
-
-    _, raw_token = await token_acreate(
-        user=admin_user,
-        name='async-cookie-csrf-test',
-    )
-    csrf_async_rf = DMRAsyncRequestFactory()
-    request = csrf_async_rf.post('/whatever/')
-    request.COOKIES['token'] = raw_token
-    assert settings.CSRF_COOKIE_NAME not in request.COOKIES
-
-    response = await csrf_async_rf.wrap(
-        _AsyncCookieController.as_view()(request),
-    )
-
-    assert isinstance(response, HttpResponse)
-    assert response.status_code == HTTPStatus.FORBIDDEN
-    assert json.loads(response.content) == snapshot({
-        'detail': [
-            {
-                'msg': 'CSRF Failed: CSRF cookie not set.',
-            },
-        ],
-    })
-
-
-@pytest.mark.django_db
-def test_sync_cookie_token_auth_with_valid_csrf(
+def test_cookie_token_sync_auth_unsafe(
     dmr_rf: DMRRequestFactory,
     admin_user: User,
-    monkeypatch: pytest.MonkeyPatch,
+    fill_csrf: Callable[[HttpRequest], HttpRequest],
+    assert_csrf_failure_message: 'CsrfFailureAssertion',
 ) -> None:
-    """Ensures CookieTokenSyncAuth succeeds when CSRF passes."""
+    """Ensures CookieTokenSyncAuth reads the token from a cookie."""
 
-    @final
     class _CookieController(Controller[PydanticFastSerializer]):
         auth = (CookieTokenSyncAuth(),)
 
         def post(self) -> str:
             return 'authed'
 
-    _, raw_token = token_create(
+    _, raw_token = Token.issue(
         user=admin_user,
-        name='cookie-csrf-valid-test',
+        name='cookie-test',
     )
-
-    monkeypatch.setattr(
-        'dmr.security._csrf._get_csrf_failure_reason',
-        lambda _: None,
-    )
-
     request = dmr_rf.post('/whatever/')
     request.COOKIES['token'] = raw_token
+    fill_csrf(request)
 
     response = _CookieController.as_view()(request)
 
@@ -228,32 +94,89 @@ def test_sync_cookie_token_auth_with_valid_csrf(
     assert response.status_code == HTTPStatus.CREATED
     assert json.loads(response.content) == 'authed'
 
+    request = dmr_rf.post('/whatever/')
+    request.COOKIES['token'] = raw_token
+
+    response = _CookieController.as_view()(request)
+
+    assert isinstance(response, HttpResponse)
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert_csrf_failure_message(response)
+
 
 @pytest.mark.asyncio
 @pytest.mark.django_db(transaction=True)
-async def test_async_cookie_token_auth_with_valid_csrf(
+@pytest.mark.parametrize(
+    ('cookie_name', 'cookie_value', 'expected_status'),
+    [
+        ('token', 'not-a-token', HTTPStatus.UNAUTHORIZED),
+        ('token', 'Prefix {0}', HTTPStatus.UNAUTHORIZED),
+        ('wrong', _CORRECT_TEMPLATE, HTTPStatus.UNAUTHORIZED),
+        ('token', _CORRECT_TEMPLATE, HTTPStatus.OK),
+    ],
+)
+async def test_async_cookie_token_auth_success(
     dmr_async_rf: DMRAsyncRequestFactory,
     admin_user: User,
-    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cookie_name: str,
+    cookie_value: str,
+    expected_status: HTTPStatus,
 ) -> None:
-    """Ensures CookieTokenAsyncAuth succeeds when CSRF passes."""
+    """Ensures CookieTokenAsyncAuth reads the token from a cookie."""
 
-    @final
+    class _AsyncCookieController(Controller[PydanticFastSerializer]):
+        auth = (CookieTokenAsyncAuth(),)
+
+        async def get(self) -> str:
+            return 'authed'
+
+    _, raw_token = await Token.aissue(
+        user=admin_user,
+        name='async-cookie-test',
+    )
+    request = dmr_async_rf.get('/whatever/')
+    request.COOKIES[cookie_name] = cookie_value.format(raw_token)
+
+    response = await dmr_async_rf.wrap(
+        _AsyncCookieController.as_view()(request),
+    )
+
+    assert isinstance(response, HttpResponse)
+    assert response.status_code == expected_status
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_async_cookie_token_auth_unsafe(
+    dmr_async_rf: DMRAsyncRequestFactory,
+    admin_user: User,
+    fill_csrf: Callable[[HttpRequest], HttpRequest],
+    assert_csrf_failure_message: 'CsrfFailureAssertion',
+) -> None:
+    """Ensures CookieTokenAsyncAuth reads the token from a cookie."""
+
     class _AsyncCookieController(Controller[PydanticFastSerializer]):
         auth = (CookieTokenAsyncAuth(),)
 
         async def post(self) -> str:
             return 'authed'
 
-    _, raw_token = await token_acreate(
+    _, raw_token = await Token.aissue(
         user=admin_user,
-        name='async-cookie-csrf-valid-test',
+        name='async-cookie-test',
+    )
+    request = dmr_async_rf.post('/whatever/')
+    request.COOKIES['token'] = raw_token
+    fill_csrf(request)
+
+    response = await dmr_async_rf.wrap(
+        _AsyncCookieController.as_view()(request),
     )
 
-    monkeypatch.setattr(
-        'dmr.security._csrf._get_csrf_failure_reason',
-        lambda _: None,
-    )
+    assert isinstance(response, HttpResponse)
+    assert response.status_code == HTTPStatus.CREATED
+    assert json.loads(response.content) == 'authed'
 
     request = dmr_async_rf.post('/whatever/')
     request.COOKIES['token'] = raw_token
@@ -263,5 +186,70 @@ async def test_async_cookie_token_auth_with_valid_csrf(
     )
 
     assert isinstance(response, HttpResponse)
-    assert response.status_code == HTTPStatus.CREATED
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert_csrf_failure_message(response)
+
+
+@pytest.mark.django_db
+def test_cookie_auth_try_next_sync(
+    dmr_rf: DMRRequestFactory,
+    admin_user: User,
+) -> None:
+    """Ensures you can try next auth after cookie auth."""
+
+    class _SyncController(Controller[PydanticFastSerializer]):
+        auth = (CookieTokenSyncAuth(), HeaderTokenSyncAuth())
+
+        def post(self) -> str:
+            return 'authed'
+
+    _, raw_token = Token.issue(
+        user=admin_user,
+        name='test',
+    )
+    request = dmr_rf.post(
+        '/whatever/',
+        headers={'X-API-Token': raw_token},
+    )
+    request.COOKIES = {}
+
+    response = _SyncController.as_view()(request)
+
+    assert isinstance(response, HttpResponse)
+    assert response.status_code == HTTPStatus.CREATED, response.content
+    assert isinstance(request_auth(request), HeaderTokenSyncAuth)
+    assert json.loads(response.content) == 'authed'
+
+
+@pytest.mark.asyncio
+@pytest.mark.django_db(transaction=True)
+async def test_cookie_auth_try_next_async(
+    dmr_async_rf: DMRAsyncRequestFactory,
+    admin_user: User,
+    settings: LazySettings,
+) -> None:
+    """Ensures async controllers work with token auth."""
+
+    class _AsyncController(Controller[PydanticFastSerializer]):
+        auth = (CookieTokenAsyncAuth(), HeaderTokenAsyncAuth())
+
+        async def post(self) -> str:
+            return 'authed'
+
+    _, raw_token = await Token.aissue(
+        user=admin_user,
+        name='async-test',
+    )
+    request = dmr_async_rf.post(
+        '/whatever/',
+        headers={'X-API-Token': raw_token},
+    )
+    assert settings.CSRF_COOKIE_NAME not in request.COOKIES
+
+    response = await dmr_async_rf.wrap(_AsyncController.as_view()(request))
+
+    assert isinstance(response, HttpResponse)
+    assert response.status_code == HTTPStatus.CREATED, response.content
+    assert response.headers == {'Content-Type': 'application/json'}
+    assert isinstance(request_auth(request), HeaderTokenAsyncAuth)
     assert json.loads(response.content) == 'authed'

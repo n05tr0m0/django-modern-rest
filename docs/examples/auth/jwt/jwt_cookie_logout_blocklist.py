@@ -1,0 +1,36 @@
+from django.urls import reverse_lazy
+from typing_extensions import override
+
+from dmr.plugins.pydantic import PydanticFastSerializer
+from dmr.security.jwt import CookieJWTSyncAuth, request_jwt
+from dmr.security.jwt.blocklist import JWTokenBlocklistSyncMixin
+from dmr.security.jwt.views import CookieLogoutSyncController
+
+
+class CookieJWTAuthWithBlocklist(JWTokenBlocklistSyncMixin, CookieJWTSyncAuth):
+    """This class also checks that tokens are not blocklisted."""
+
+
+cookie_blocklist_auth = CookieJWTAuthWithBlocklist()
+
+
+class LogoutAndBlocklistController(
+    CookieLogoutSyncController[PydanticFastSerializer],
+):
+    # Auth is required here: we can only blocklist a token we could read.
+    # Which also means that this endpoint answers `401`
+    # when the access token has already expired.
+    auth = (cookie_blocklist_auth,)
+    jwt_refresh_cookie_path = reverse_lazy('api:jwt_refresh')
+
+    @override
+    def revoke_tokens(self) -> None:
+        # After this the access token is rejected by the auth above,
+        # even though it is still a valid, non-expired token:
+        cookie_blocklist_auth.blocklist(
+            request_jwt(self.request, strict=True),
+        )
+
+
+# run: {"controller": "LogoutAndBlocklistController", "method": "post", "url": "/api/auth/logout/", "url_names": {"api:jwt_refresh": "/api/auth/refresh/"}, "cookies": {"access_token": "$JWT_ACCESS_TOKEN", "csrftoken": "$CSRF_TOKEN"}, "headers": {"X-CSRFToken": "$CSRF_TOKEN"}, "populate_db": true, "curl_args": ["-D", "-"]}  # noqa: ERA001, E501
+# openapi: {"controller": "LogoutAndBlocklistController", "openapi_url": "/docs/openapi.json/"}  # noqa: ERA001, E501

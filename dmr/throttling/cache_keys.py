@@ -5,8 +5,6 @@ from typing import TYPE_CHECKING, Literal
 
 from typing_extensions import override
 
-from dmr.security.jwt.auth import request_jwt
-
 if TYPE_CHECKING:
     from dmr.controller import Controller
     from dmr.endpoint import Endpoint
@@ -90,8 +88,8 @@ class UserPk(BaseThrottleCacheKey):
         """Return ``request.user.pk`` when user should be throttled."""
         user = controller.request.user
         user_pk = getattr(user, 'pk', None)
-        if (  # TODO: this is a bug in `WPS` :(
-            user_pk is None  # noqa: WPS222
+        if (
+            user_pk is None
             or (getattr(user, 'is_superuser', False) and self.exclude_superuser)
             or (getattr(user, 'is_staff', False) and self.exclude_stuff)
         ):
@@ -103,6 +101,12 @@ class UserPk(BaseThrottleCacheKey):
 class JwtToken(BaseThrottleCacheKey):
     """
     Uses a hash of JWT claims from ``request.__dmr_jwt__`` as a cache key.
+
+    Requires JWT extra to be installed with:
+
+    .. code:: bash
+
+        pip install 'django-modern-rest[jwt]'
 
     1. Never use a full token string for cache key generation.
     2. Prefer ``jti`` claim, fallback to ``sub`` claim.
@@ -124,6 +128,8 @@ class JwtToken(BaseThrottleCacheKey):
         controller: 'Controller[BaseSerializer]',
     ) -> str | None:
         """Return a hash of JWT ``jti`` / ``sub`` claims as a cache key."""
+        from dmr.security.jwt import request_jwt  # noqa: PLC0415
+
         jwt_token = request_jwt(controller.request)
         if jwt_token is None:
             return None

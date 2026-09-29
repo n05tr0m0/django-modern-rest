@@ -1,26 +1,28 @@
 import pytest
 from django.urls import path
-from syrupy.assertion import SnapshotAssertion
+from faker import Faker
+from inline_snapshot import snapshot
 from typing_extensions import override
-
-try:
-    from openapi_spec_validator.validation.exceptions import (
-        OpenAPIValidationError,
-    )
-except ImportError:  # pragma: no cover
-    pytest.skip(
-        reason='openapi_spec_validator is not installed',
-        allow_module_level=True,
-    )
 
 from dmr import Controller, modify
 from dmr.endpoint import Endpoint
-from dmr.openapi import build_schema
-from dmr.openapi.objects import Reference, SecurityRequirement, SecurityScheme
+from dmr.metadata import EndpointMetadata
+from dmr.openapi import OpenAPIConfig, build_schema
+from dmr.openapi.objects import (
+    Components,
+    Reference,
+    SecurityRequirement,
+    SecurityScheme,
+)
+from dmr.openapi.objects.schema import Schema
 from dmr.plugins.pydantic import PydanticSerializer
 from dmr.routing import Router
 from dmr.security import SyncAuth
 from dmr.serializer import BaseSerializer
+
+OpenAPIValidationError = pytest.importorskip(
+    'openapi_spec_validator.validation.exceptions',
+).OpenAPIValidationError
 
 
 class _WrongAuth(SyncAuth):
@@ -32,9 +34,12 @@ class _WrongAuth(SyncAuth):
     ) -> None:
         raise NotImplementedError
 
-    @property
     @override
-    def security_schemes(self) -> dict[str, SecurityScheme | Reference]:
+    def security_schemes(
+        self,
+        metadata: EndpointMetadata,
+        controller_cls: type[Controller[BaseSerializer]],
+    ) -> dict[str, SecurityScheme | Reference]:
         return {
             'wrong': SecurityScheme(
                 type='http',
@@ -42,10 +47,18 @@ class _WrongAuth(SyncAuth):
             ),
         }
 
+    @override
+    def security_requirements(
+        self,
+        metadata: EndpointMetadata,
+        controller_cls: type[Controller[BaseSerializer]],
+    ) -> list[SecurityRequirement]:
+        return []
+
     @property
     @override
-    def security_requirement(self) -> SecurityRequirement:
-        return SecurityRequirement()
+    def www_authenticate_challenge(self) -> str | None:
+        """This auth has no challenge, so this returns ``None``."""
 
 
 class _UserController(Controller[PydanticSerializer]):
@@ -54,7 +67,42 @@ class _UserController(Controller[PydanticSerializer]):
         raise NotImplementedError
 
 
-def test_schema_validation(snapshot: SnapshotAssertion) -> None:
+def test_schema_supports_json_schema_keywords(  # noqa: WPS210
+    faker: Faker,
+) -> None:
+    """Ensure that Schema exposes the missing JSON Schema keywords."""
+    ref = f'#/components/schemas/{faker.name()}'
+    anchor = faker.name()
+    comment = faker.sentence()
+    schema_uri = faker.url()
+
+    schema = Schema(
+        ref=ref,
+        anchor=anchor,
+        comment=comment,
+        schema_uri=schema_uri,
+    )
+    router = Router('/')
+    config = OpenAPIConfig(
+        title='Title',
+        version='0.0.1',
+        components=Components(schemas={'Test': schema}),
+    )
+    openapi = build_schema(router, config=config).convert(skip_validation=True)
+
+    assert openapi['components'] == snapshot({
+        'schemas': {
+            'Test': {
+                '$ref': ref,
+                '$anchor': anchor,
+                '$comment': comment,
+                '$schema': schema_uri,
+            },
+        },
+    })
+
+
+def test_schema_validation() -> None:
     """Ensure that schema is validated correctly."""
     router = Router(
         'api/v1/',
@@ -66,3 +114,36 @@ def test_schema_validation(snapshot: SnapshotAssertion) -> None:
 
     # It is possible to disable the validation:
     build_schema(router).convert(skip_validation=True)
+
+
+def test_cached_schema_validation() -> None:
+    """Ensure skipping validation does not bypass later validation failures."""
+    schema = build_schema(
+        Router(
+            'api/v1/',
+            [path('user/', _UserController.as_view())],
+        ),
+    )
+    schema.convert(skip_validation=True)
+
+    # Validate the cached schema even if the first conversion skipped it:
+    with pytest.raises(OpenAPIValidationError, match='Wrong'):
+        schema.convert()
+
+
+def test_schema_validation_after_cache_clear() -> None:
+    """Ensures that schema is validated again after clearing its cache."""
+    schema = build_schema(Router())
+    schema.convert()
+    schema.components = Components(
+        security_schemes={
+            'wrong': SecurityScheme(type='http', name='Wrong'),
+        },
+    )
+    schema.cache_clear()
+
+    with pytest.raises(
+        OpenAPIValidationError,
+        match=r'["\']scheme["\'] is a required property',
+    ):
+        schema.convert()

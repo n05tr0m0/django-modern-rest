@@ -1,20 +1,20 @@
 from django.contrib.auth.models import User
 
 from dmr import Controller
-from dmr.plugins.pydantic import PydanticSerializer
+from dmr.plugins.pydantic import PydanticFastSerializer
 from dmr.security import AuthenticatedHttpRequest, request_auth
-from dmr.security.jwt import JWTAsyncAuth, request_jwt
+from dmr.security.jwt import HeaderJWTAsyncAuth, request_jwt
 from dmr.security.jwt.blocklist import JWTokenBlocklistAsyncMixin
 
 
-class JWTAuthWithBlocklist(JWTokenBlocklistAsyncMixin, JWTAsyncAuth):
+class JWTAuthWithBlocklist(JWTokenBlocklistAsyncMixin, HeaderJWTAsyncAuth):
     """This class will also check that tokens are not blocklisted."""
 
 
 jwt_blocklist_auth = JWTAuthWithBlocklist()
 
 
-class APIController(Controller[PydanticSerializer]):
+class APIController(Controller[PydanticFastSerializer]):
     request: AuthenticatedHttpRequest[User]
     auth = (jwt_blocklist_auth,)
 
@@ -28,4 +28,5 @@ class APIController(Controller[PydanticSerializer]):
         return 'authed'
 
 
+# run: {"controller": "APIController", "method": "get", "url": "/api/users/", "headers": {"Authorization": "Bearer $JWT_ACCESS_TOKEN"}, "populate_db": true}  # noqa: ERA001, E501
 # openapi: {"controller": "APIController", "openapi_url": "/docs/openapi.json/"}  # noqa: ERA001

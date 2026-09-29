@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import msgspec
@@ -9,21 +9,29 @@ from dmr.errors import ErrorDetail, ErrorType
 from dmr.parsers import Parser, Raw
 from dmr.plugins.msgspec.schema import MsgspecSchemaGenerator
 from dmr.renderers import Renderer
-from dmr.serializer import BaseEndpointOptimizer, BaseSerializer
+from dmr.serializer import (
+    BaseEndpointOptimizer,
+    BaseSerializer,
+    ContextField,
+    ContextModel,
+    context_field_tuples,
+)
 
 if TYPE_CHECKING:
     from dmr.metadata import EndpointMetadata
 
 
-class ToModelKwargs(TypedDict, total=False):
-    """Custom serializer API options, taken by :func:`msgspec.convert`."""
-
+class _CommonKwargs(TypedDict, total=False):
     # `from_attributes` is explicitly left out. It is always `False`.
     builtin_types: Iterable[type[Any]] | None
     str_keys: bool
 
 
-class ToJsonKwargs(ToModelKwargs, total=False):
+class ToModelKwargs(_CommonKwargs, total=False, closed=True):
+    """Custom serializer API options, taken by :func:`msgspec.convert`."""
+
+
+class ToJsonKwargs(_CommonKwargs, total=False, closed=True):
     """Custom deserializer API options, taken by :func:`msgspec.to_builtins`."""
 
     order: Literal['deterministic', 'sorted'] | None
@@ -31,6 +39,8 @@ class ToJsonKwargs(ToModelKwargs, total=False):
 
 class MsgspecEndpointOptimizer(BaseEndpointOptimizer):
     """Optimize endpoints that are parsed with Msgspec."""
+
+    __slots__ = ()
 
     @override
     @classmethod
@@ -108,6 +118,7 @@ class MsgspecSerializer(BaseSerializer):
         model: Any,
         *,
         strict: bool | None,
+        extra_namespace: Mapping[str, Any] | None = None,
     ) -> Any:
         """
         Parse *unstructured* data from python primitives into *model*.
@@ -121,12 +132,16 @@ class MsgspecSerializer(BaseSerializer):
                 For example, it is fine for a request validation
                 to be less strict in some cases and allow type coercition.
                 But, response types need to be strongly validated.
+            extra_namespace: Not used currently.
 
         Returns:
             Structured and validated data.
 
         Raises:
             msgspec.ValidationError: When parsing can't be done.
+
+        .. versionchanged:: 0.13.0
+            Added *extra_namespace* parameter.
 
         """
         return msgspec.convert(
@@ -136,6 +151,35 @@ class MsgspecSerializer(BaseSerializer):
             dec_hook=cls.deserialize_hook,
             **cls.to_model_kwargs,
         )
+
+    @override
+    @classmethod
+    def build_context_model(
+        cls,
+        name: str,
+        fields: Mapping[str, ContextField],
+    ) -> ContextModel:
+        """
+        Build the model to parse the whole request context at once.
+
+        We always build a :class:`msgspec.Struct` with ``gc=False``,
+        it is around x2 faster to validate than a :class:`typing.TypedDict`.
+        Struct instances are converted into keyword arguments
+        with :func:`msgspec.structs.asdict`.
+        Defaults are passed as-is, so ``msgspec`` rules apply:
+        mutable defaults like ``[1]`` or non-frozen structs are not allowed.
+
+        .. versionadded:: 0.16.0
+
+        """
+        model = msgspec.defstruct(
+            name,
+            context_field_tuples(fields),
+            # Instances live only for a single request and never have
+            # any cycles, there's no need to track them:
+            gc=False,
+        )
+        return ContextModel(model, to_kwargs=msgspec.structs.asdict)
 
     @override
     @classmethod

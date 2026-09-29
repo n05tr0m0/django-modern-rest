@@ -5,12 +5,11 @@ import uuid
 import pydantic
 from django.conf import settings
 from django.core.management import execute_from_command_line
-from django.urls import include
 
 from dmr import Body, Controller
 from dmr.openapi import build_schema
 from dmr.openapi.views import OpenAPIJsonView, SwaggerView
-from dmr.plugins.pydantic import PydanticSerializer
+from dmr.plugins.pydantic import PydanticFastSerializer
 from dmr.routing import Router, path
 
 if not settings.configured:
@@ -43,7 +42,7 @@ class UserResponseModel(UserCreateModel):
     uid: uuid.UUID
 
 
-class UserController(Controller[PydanticSerializer]):
+class UserController(Controller[PydanticFastSerializer]):
     async def post(
         self,
         parsed_body: Body[UserCreateModel],
@@ -60,7 +59,7 @@ router = Router(
 schema = build_schema(router)
 
 urlpatterns = [
-    path(router.prefix, include((router.urls, 'your_app'), namespace='api')),
+    router.to_urlpatterns(namespace='api'),
     path('docs/openapi.json/', OpenAPIJsonView.as_view(schema), name='openapi'),
     path('docs/swagger/', SwaggerView.as_view(schema), name='swagger'),
 ]

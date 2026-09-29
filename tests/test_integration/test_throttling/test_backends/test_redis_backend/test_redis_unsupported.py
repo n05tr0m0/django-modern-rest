@@ -1,12 +1,7 @@
 from typing import Any
 
 import pytest
-
-try:
-    import redis
-except ImportError:  # pragma: no cover
-    pytest.skip(reason='redis is not installed', allow_module_level=True)
-
+import redis
 from redis import asyncio as aioredis
 from typing_extensions import override
 
@@ -15,7 +10,6 @@ from dmr.endpoint import Endpoint
 from dmr.exceptions import EndpointMetadataError
 from dmr.plugins.pydantic import PydanticSerializer
 from dmr.serializer import BaseSerializer
-from dmr.test import DMRRequestFactory
 from dmr.throttling import AsyncThrottle, Rate, SyncThrottle
 from dmr.throttling.algorithms import BaseThrottleAlgorithm
 from dmr.throttling.backends import CachedRateLimit
@@ -45,7 +39,6 @@ class _NoLuaAlgo(BaseThrottleAlgorithm):
 
 
 def test_redis_with_unsupported_algorithm(
-    dmr_rf: DMRRequestFactory,
     redis_client: 'redis.Redis[Any]',
 ) -> None:
     """Ensures that throttle information can be served on success."""
@@ -63,7 +56,6 @@ def test_redis_with_unsupported_algorithm(
 
 
 def test_async_redis_with_unsupported_algorithm(
-    dmr_rf: DMRRequestFactory,
     redis_async_client: 'aioredis.Redis[Any]',
 ) -> None:
     """Ensures that throttle information can be served on success."""

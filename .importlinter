@@ -40,8 +40,11 @@ ignore_imports =
   dmr.settings -> dmr.internal.cache
   # Settings can initialize default OpenAPI config:
   dmr.settings -> dmr.openapi.config
-  # Response generation:
-  dmr.openapi.generators.response -> dmr.negotiation
+  # Schema loading can call pydantic plugin:
+  dmr.openapi.mappers.schema_normalization -> dmr.plugins.pydantic
+  # The default error handler adds `WWW-Authenticate` to `401` responses,
+  # it needs the auth chain to know what challenge to send:
+  dmr.errors -> dmr.security.base
 
 [importlinter:contract:no-optional-deps]
 name = Do not use these optional dependencies outside of plugins
@@ -55,27 +58,35 @@ forbidden_modules =
   pydantic
   msgspec
   jwt
+  allauth
   openapi_spec_validator
   polyfactory
   yaml
   attrs
   attr
+  cattrs
   # internal modules:
   dmr_pytest
   django_test_app
 
 ignore_imports =
-  # Pydantic plugin:
-  dmr.plugins.pydantic -> pydantic
-  dmr.plugins.pydantic.* -> pydantic
   # Msgspec plugin:
   dmr.plugins.msgspec -> msgspec
   dmr.plugins.msgspec.* -> msgspec
+  # Pydantic plugin:
+  dmr.plugins.pydantic -> pydantic
+  dmr.plugins.pydantic.* -> pydantic
+  # Pydantic optional schema loading:
+  dmr.internal.dataclass_aliases -> pydantic
+  dmr.openapi.mappers.schema_normalization -> pydantic
   # jwt auth:
   dmr.security.jwt -> jwt
   dmr.security.jwt.* -> jwt
+  # allauth headless auth:
+  dmr.security.allauth -> allauth
+  dmr.security.allauth.* -> allauth
   # OpenAPI validation:
-  dmr.openapi.objects.openapi -> openapi_spec_validator
+  dmr.openapi.openapi -> openapi_spec_validator
   # Examples generation:
   dmr.openapi.mappers.example -> polyfactory
   # Yaml:
@@ -84,6 +95,8 @@ ignore_imports =
   # Optional json support from msgspec:
   dmr.settings -> msgspec
   dmr.internal.json -> msgspec
+  # Optional jwt support:
+  dmr.internal.jwt -> jwt
 
 [importlinter:contract:plugins-independence]
 name = All `plugins` must be independent
@@ -91,6 +104,16 @@ type = independence
 
 modules =
   dmr.plugins.*
+
+[importlinter:contract:security-token-no-direct-model-import]
+name = All `dmr.security.token` logic must be independent from the Token model
+type = forbidden
+
+source_modules =
+  dmr.security.token.auth
+
+forbidden_modules =
+  dmr.security.token.app
 
 [importlinter:streaming:layers]
 name = Enforce correct layers in streaming
@@ -105,6 +128,7 @@ layers =
   stream | renderer
   metadata
   validation
+  endpoint
   exceptions
 
 [importlinter:openapi:layers]
@@ -118,6 +142,7 @@ layers =
   spec
   views | core
   generators
+  openapi
   collector | config
   objects
 

@@ -8,7 +8,12 @@ except ImportError:  # pragma: no cover
     raise
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, ClassVar, Final, cast
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    nullcontext,
+)
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 from redis import asyncio as aioredis
 from redis.commands.core import AsyncScript, Script
@@ -80,21 +85,20 @@ class SyncRedis(BaseThrottleSyncBackend):
         cache_key: str,
         algorithm: 'BaseThrottleAlgorithm',
     ) -> CachedRateLimit:
-        script_result = cast(
-            tuple[int, int, int],
-            self._script(
-                keys=[cache_key],
-                # write request:
-                args=[
-                    throttle.max_requests,
-                    throttle.duration_in_seconds,
-                    _WRITE,
-                ],
-            ),
+        """Atomic sync increment via Lua script."""
+        script_result: tuple[int, int, int] = self._script(  # pyright: ignore[reportUnknownVariableType]
+            keys=[cache_key],
+            # write request:
+            args=[
+                throttle.max_requests,
+                throttle.duration_in_seconds,
+                _WRITE,
+            ],
         )
         cache_object = CachedRateLimit(
             history=[script_result[1]],
-            time=script_result[2],
+            time=script_result[2],  # pyright: ignore[reportUnknownArgumentType]
+            is_ttl=True,
         )
         if script_result[0] == 0:
             raise TooManyRequestsError(
@@ -117,22 +121,28 @@ class SyncRedis(BaseThrottleSyncBackend):
         cache_key: str,
     ) -> CachedRateLimit | None:
         """Sync get the cached rate limit state."""
-        script_result = cast(
-            tuple[int, int, int],
-            self._script(
-                keys=[cache_key],
-                # read-only request:
-                args=[
-                    throttle.max_requests,
-                    throttle.duration_in_seconds,
-                    _READ,
-                ],
-            ),
+        script_result: tuple[int, int, int] = self._script(  # pyright: ignore[reportUnknownVariableType]
+            keys=[cache_key],
+            # read-only request:
+            args=[
+                throttle.max_requests,
+                throttle.duration_in_seconds,
+                _READ,
+            ],
         )
         return CachedRateLimit(
             history=[script_result[1]],
-            time=script_result[2],
+            time=script_result[2],  # pyright: ignore[reportUnknownArgumentType]
+            is_ttl=True,
         )
+
+    @override
+    def lock(
+        self,
+        lock: AbstractContextManager[Any, Any],
+    ) -> AbstractContextManager[Any, Any]:
+        """Skip the in-process lock: the `incr` is atomic."""
+        return nullcontext()
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -186,16 +196,15 @@ class AsyncRedis(BaseThrottleAsyncBackend):
         cache_key: str,
         algorithm: 'BaseThrottleAlgorithm',
     ) -> CachedRateLimit:
-        script_result = cast(
-            tuple[int, int, int],
-            await self._script(
-                keys=[cache_key],
-                args=[throttle.max_requests, throttle.duration_in_seconds, 0],
-            ),
+        """Atomic async increment via Lua script."""
+        script_result: tuple[int, int, int] = await self._script(  # pyright: ignore[reportUnknownVariableType]
+            keys=[cache_key],
+            args=[throttle.max_requests, throttle.duration_in_seconds, 0],
         )
         cache_object = CachedRateLimit(
             history=[script_result[1]],
-            time=script_result[2],
+            time=script_result[2],  # pyright: ignore[reportUnknownArgumentType]
+            is_ttl=True,
         )
         if script_result[0] == 0:
             raise TooManyRequestsError(
@@ -218,15 +227,21 @@ class AsyncRedis(BaseThrottleAsyncBackend):
         cache_key: str,
     ) -> CachedRateLimit | None:
         """Async get the cached rate limit state."""
-        script_result = cast(
-            tuple[int, int, int],
-            await self._script(
-                keys=[cache_key],
-                # read-only request with the last `1`:
-                args=[throttle.max_requests, throttle.duration_in_seconds, 1],
-            ),
+        script_result: tuple[int, int, int] = await self._script(  # pyright: ignore[reportUnknownVariableType]
+            keys=[cache_key],
+            # read-only request with the last `1`:
+            args=[throttle.max_requests, throttle.duration_in_seconds, 1],
         )
         return CachedRateLimit(
             history=[script_result[1]],
-            time=script_result[2],
+            time=script_result[2],  # pyright: ignore[reportUnknownArgumentType]
+            is_ttl=True,
         )
+
+    @override
+    def lock(
+        self,
+        lock: AbstractAsyncContextManager[Any, Any],
+    ) -> AbstractAsyncContextManager[Any, Any]:
+        """Skip the in-process lock: the `incr` is atomic."""
+        return nullcontext()

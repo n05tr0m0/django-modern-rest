@@ -3,20 +3,28 @@ from io import StringIO
 from typing import Any, Final
 
 import pytest
+from django.conf import LazySettings
 from django.core.management import call_command
+
+from dmr.management.commands import dmr_export_schema
 
 # From the OpenAPI description:
 _NON_ASCII_TEXT: Final = 'Не АСКИИ текст'  # noqa: RUF001
+
+
+@pytest.fixture(autouse=True)
+def _modify_integration_settings(settings: LazySettings) -> None:
+    # The management command never reads `DEBUG`, so there is no value
+    # in running all cases twice via the parent conftest parametrisation.
+    settings.DEBUG = False
 
 
 @pytest.mark.parametrize(
     'kwargs',
     [
         {},  # default
-        {'format': 'json'},  # explicit json
         {'format': 'json', 'no_ensure_ascii': True},
         {'indent': 0},
-        {'indent': None},
         {'indent': 2},  # pretty
         {'sort_keys': True},  # sort keys
         {'indent': 2, 'sort_keys': True},
@@ -43,12 +51,16 @@ def test_export_schema_json(
         keys = list(parsed.keys())
         assert keys == sorted(keys)
 
-    assert ('  ' in output) is bool(kwargs.get('indent'))
-
     if kwargs.get('no_ensure_ascii'):
         assert _NON_ASCII_TEXT in output
     else:
         assert _NON_ASCII_TEXT not in output
+
+    # Clean the kwargs and try to compare the results with what `json` produces:
+    kwargs = kwargs.copy()
+    kwargs.pop('format', None)
+    kwargs['ensure_ascii'] = not kwargs.pop('no_ensure_ascii', False)
+    assert json.dumps(parsed, **kwargs) == output.strip()
 
 
 @pytest.mark.parametrize(
@@ -58,7 +70,6 @@ def test_export_schema_json(
         {'no_ensure_ascii': True},
         {'indent': 4},  # custom indentation
         {'indent': 2},
-        {'indent': None},
         {'sort_keys': True},  # sort keys
         {'indent': 4, 'sort_keys': True},
         {'indent': 4, 'no_ensure_ascii': True},
@@ -100,9 +111,54 @@ def test_export_schema_yaml(
     ],
 )
 def test_export_schema_invalid_input(
+    *,
     schema_path: str,
     expected_exception: type[Exception],
 ) -> None:
     """Invalid schema inputs raise the expected exception."""
     with pytest.raises(expected_exception):
         call_command('dmr_export_schema', schema_path)
+
+
+@pytest.mark.parametrize(
+    ('kwargs', 'expected_skip_validation'),
+    [
+        ({}, False),
+        ({'skip_validation': True}, True),
+    ],
+)
+def test_skip_validation_to_schema_converter(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    kwargs: dict[str, Any],
+    expected_skip_validation: bool,
+) -> None:
+    """Pass the skip-validation flag to the schema converter.
+
+    This also verifies that the default remains false.
+    """
+    observed: list[bool] = []
+
+    class FakeSchema:
+        def convert(self, *, skip_validation: bool) -> dict[str, bool]:
+            observed.append(skip_validation)
+            return {'skip_validation': skip_validation}
+
+    monkeypatch.setattr(
+        dmr_export_schema,
+        'import_string',
+        lambda _: FakeSchema(),
+    )
+
+    out = StringIO()
+    call_command(
+        'dmr_export_schema',
+        'server.urls:schema',
+        stdout=out,
+        **kwargs,
+    )
+
+    assert observed == [expected_skip_validation]
+    assert json.loads(out.getvalue()) == {
+        'skip_validation': expected_skip_validation,
+    }

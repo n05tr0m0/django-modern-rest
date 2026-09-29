@@ -1,0 +1,126 @@
+import dataclasses
+from typing import TYPE_CHECKING, Annotated, Protocol
+
+from dmr.internal.dataclass_aliases import Field
+from dmr.openapi.mappers.schema_normalization import DumpedSchema, dump_schema
+from dmr.openapi.objects.components import Components
+from dmr.openapi.objects.external_documentation import ExternalDocumentation
+from dmr.openapi.objects.info import Info
+from dmr.openapi.objects.path_item import PathItem
+from dmr.openapi.objects.paths import Paths
+from dmr.openapi.objects.reference import Reference
+from dmr.openapi.objects.security_requirement import SecurityRequirement
+from dmr.openapi.objects.server import Server
+from dmr.openapi.objects.tag import Tag
+
+if TYPE_CHECKING:
+    from jsonschema_path.typing import Schema
+    from openapi_spec_validator.validation.types import SpecValidatorType
+
+    class _ValidateSpecProto(Protocol):
+        def __call__(
+            self,
+            spec: 'Schema',
+            base_uri: str = '',
+            cls: 'SpecValidatorType | None' = None,  # noqa: WPS117
+        ) -> None: ...
+
+    _validate_spec: _ValidateSpecProto | None
+
+try:
+    # There's a mismatch of checks with mypyc and mypy,
+    # so we use `unused-ignore` here:
+    from openapi_spec_validator import (  # type: ignore[no-redef, unused-ignore]
+        validate as _validate_spec,
+    )
+except ImportError:  # pragma: no cover
+    _validate_spec = None
+
+
+@dataclasses.dataclass(kw_only=True, slots=True)
+class OpenAPI:
+    """
+    This is the root object of the OpenAPI document.
+
+    .. versionchanged:: 0.13.0
+        Moved from ``dmr.openapi.objects.OpenAPI``
+        to ``dmr.openapi.openapi.OpenAPI``.
+
+    .. versionchanged:: 0.16.0
+        Added ``self_uri`` for the ``$self`` field from OpenAPI 3.2.
+
+    """
+
+    info: Info  # noqa: WPS110
+    openapi: str
+    #: OpenAPI 3.2+ ``$self``: the self-assigned URI of this document,
+    #: it also serves as the base URI to resolve references against.
+    self_uri: Annotated[str | None, Field(alias='$self')] = None
+    json_schema_dialect: str | None = None
+    servers: list[Server] | None = None
+    paths: Paths | None = None
+    webhooks: dict[str, PathItem | Reference] | None = None
+    components: Components | None = None
+    security: list[SecurityRequirement] | None = None
+    tags: list[Tag] | None = None
+    external_docs: ExternalDocumentation | None = None
+
+    _validated: bool = dataclasses.field(
+        default=False,
+        init=False,
+        repr=False,
+        hash=False,
+        compare=False,
+    )
+    _converted: DumpedSchema | None = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+        hash=False,
+        compare=False,
+    )
+
+    def convert(self, *, skip_validation: bool = False) -> DumpedSchema:
+        """
+        Convert the object to OpenAPI schema dictionary.
+
+        Runs validation if ``'django-modern-rest[openapi]'`` is installed
+        and *skip_validation* is falsy.
+
+        The converted dictionary is cached on this instance and reused by
+        subsequent calls. Treat the returned dictionary as read-only and call
+        :meth:`cache_clear` after modifying an already converted schema.
+
+        Skipping validation does not prevent a later call from validating
+        the cached dictionary.
+
+        .. versionchanged:: 0.15.0
+            Now we only run schema conversion once
+            per instance and cache the result.
+
+        """
+        # Do not reconvert the same spec.
+        if self._converted is None:
+            self._converted = dump_schema(self)
+        if (
+            not skip_validation
+            and not self._validated
+            and _validate_spec is not None
+        ):
+            _validate_spec(self._converted)
+            # Do not revalidate the same spec.
+            self._validated = True
+        return self._converted
+
+    def cache_clear(self) -> None:
+        """
+        Clear cached schema conversion and validation state.
+
+        Use this method after modifying an already converted schema. The next
+        :meth:`convert` call rebuilds the schema and validates it unless
+        validation is skipped.
+
+        .. versionadded:: 0.15.0
+        """
+        self._converted = None
+        self._validated = False

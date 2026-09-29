@@ -1,4 +1,3 @@
-import datetime as dt
 from typing import Any, Final, TypeAlias
 
 import pytest
@@ -7,8 +6,8 @@ from django.conf import LazySettings
 from dmr import Controller
 from dmr.exceptions import EndpointMetadataError
 from dmr.plugins.pydantic import PydanticFastSerializer, PydanticSerializer
-from dmr.security.token.constants import TOKEN_DEFAULT_EXPIRY_DAYS
 from dmr.serializer import BaseSerializer
+from dmr.types import EMPTY
 from dmr.validation import SettingsValidator
 
 _Serializes: TypeAlias = list[type[BaseSerializer]]
@@ -26,8 +25,12 @@ else:  # pragma: no cover
 
 
 @pytest.fixture(autouse=True)
-def _reset_settings_validation(dmr_clean_settings: None) -> None:
-    SettingsValidator.is_validated = False
+def _reset_settings_validation(
+    dmr_clean_settings: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Restore the original state after the test, so it does not leak:
+    monkeypatch.setattr(SettingsValidator, 'is_validated', False)
 
 
 @pytest.mark.parametrize(
@@ -40,13 +43,21 @@ def _reset_settings_validation(dmr_clean_settings: None) -> None:
         {'parsers': [1]},
         {'renderers': [None]},
         {'validate_negotiation': 'true'},
+        {'validate_events': 1},
+        {'semantic_responses': 'yes'},
+        {'semantic_schema': EMPTY},
+        {'semantic_auth': None},
+        {'exclude_semantic_auth': frozenset((1, 2))},
+        {'openapi_examples_seed': 'abc'},
+        {'openapi_examples_seed': None},
         {'auth': ['auth']},
         {'throttling': ['throttling']},
         {'responses': [{}]},
+        {'semantic_schema_providers': [None]},
         {'openapi_config': []},
         {'global_error_handler': None},
         {'exclude_semantic_responses': 1},
-        {'auth_token_default_expiry': '30 days'},
+        {'exclude_validate_responses': 1},
     ],
 )
 @pytest.mark.parametrize('serializer', serializers)
@@ -61,7 +72,9 @@ def test_wrong_settings_validation(
 
     with pytest.raises(EndpointMetadataError, match='Settings'):
 
-        class _ValidController(Controller[serializer]):  # type: ignore[valid-type]
+        class _InvalidController(
+            Controller[serializer],  # type: ignore[valid-type]
+        ):
             def post(self) -> int:
                 raise NotImplementedError
 
@@ -77,12 +90,10 @@ def test_wrong_settings_validation(
         {'no_validate_http_spec': frozenset()},
         {'exclude_semantic_responses': set()},
         {'exclude_semantic_responses': frozenset()},
-        {
-            'auth_token_default_expiry': dt.timedelta(
-                days=TOKEN_DEFAULT_EXPIRY_DAYS,
-            ),
-        },
-        {'auth_token_default_expiry': None},
+        {'exclude_validate_responses': set()},
+        {'exclude_validate_responses': frozenset()},
+        {'exclude_semantic_auth': set()},
+        {'exclude_semantic_auth': frozenset()},
     ],
 )
 @pytest.mark.parametrize('serializer', serializers)

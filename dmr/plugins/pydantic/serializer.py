@@ -1,14 +1,14 @@
+import dataclasses
 from collections.abc import Callable, Mapping
-from dataclasses import is_dataclass
 from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
+    Final,
     Literal,
     TypeAlias,
     TypeVar,
-    Union,
     final,
 )
 
@@ -24,24 +24,33 @@ from dmr.exceptions import DataParsingError, DataRenderingError
 from dmr.parsers import Parser, Raw
 from dmr.plugins.pydantic.schema import PydanticSchemaGenerator
 from dmr.renderers import Renderer
-from dmr.serializer import BaseEndpointOptimizer, BaseSerializer
+from dmr.serializer import (
+    BaseEndpointOptimizer,
+    BaseSerializer,
+    ContextField,
+    ContextModel,
+    context_field_tuples,
+)
+from dmr.types import EMPTY
 
 if TYPE_CHECKING:
     from dmr.metadata import EndpointMetadata
 
+#: Mode that we use for default serialization.
+_JSON_MODE: Final = 'json'
 
 # pydantic does not allow to import this,
 # so we have to duplicate this type.
 _IncEx: TypeAlias = (
     set[int]
     | set[str]
-    | Mapping[int, Union['_IncEx', bool]]
-    | Mapping[str, Union['_IncEx', bool]]
+    | Mapping[int, '_IncEx | bool']
+    | Mapping[str, '_IncEx | bool']
 )
 
 
 @final
-class ToJsonKwargs(TypedDict, total=False):
+class ToJsonKwargs(TypedDict, total=False, closed=True):
     """Keyword arguments for pydantic's model dump method."""
 
     # `mode` is explicitly left out. It is always `json`.
@@ -60,7 +69,7 @@ class ToJsonKwargs(TypedDict, total=False):
 
 
 @final
-class ToModelKwargs(TypedDict, total=False):
+class ToModelKwargs(TypedDict, total=False, closed=True):
     """Keyword arguments for pydantic's python object validation method."""
 
     # `from_attributes` is explicitly left out. It is always `False`.
@@ -73,6 +82,8 @@ class ToModelKwargs(TypedDict, total=False):
 
 class PydanticEndpointOptimizer(BaseEndpointOptimizer):
     """Optimize endpoints that are parsed with pydantic."""
+
+    __slots__ = ()
 
     @override
     @classmethod
@@ -143,20 +154,25 @@ class PydanticSerializer(BaseSerializer):
     def serialize_hook(cls, to_serialize: Any) -> Any:
         """Customize how some objects are serialized into simple objects."""
         if isinstance(to_serialize, pydantic.BaseModel):
-            return to_serialize.model_dump(mode='json', **cls.to_json_kwargs)
+            return to_serialize.__pydantic_serializer__.to_python(
+                to_serialize,
+                mode=_JSON_MODE,
+                **cls.to_json_kwargs,
+            )
         # We support dataclasses here, because raw `JsonRenderer`
-        # does not support them, however, we use them in multiple places inside:
-        if is_dataclass(to_serialize):
+        # does not support them, however, we use them in multiple places inside.
+        # Or this is a pydantic field inside a `TypedDict`, `@dataclass`, etc:
+        if dataclasses.is_dataclass(to_serialize) or hasattr(
+            to_serialize,
+            '__get_pydantic_core_schema__',
+        ):
             return _get_cached_type_adapter(
                 type(to_serialize),  # type: ignore[arg-type]
             ).dump_python(
                 to_serialize,
+                mode=_JSON_MODE,
+                **cls.to_json_kwargs,
             )
-        # This is a pydantic field inside a `TypedDict`, `@dataclass`, etc:
-        if hasattr(to_serialize, '__get_pydantic_core_schema__'):
-            return _get_cached_type_adapter(
-                type(to_serialize),  # type: ignore[arg-type]
-            ).dump_python(to_serialize, mode='json', **cls.to_json_kwargs)
         return super().serialize_hook(to_serialize)
 
     @override
@@ -185,7 +201,7 @@ class PydanticSerializer(BaseSerializer):
         model: Any,
         *,
         strict: bool | None,
-        rebuild_namespace: Mapping[str, Any] | None = None,
+        extra_namespace: Mapping[str, Any] | None = None,
     ) -> Any:
         """
         Parse *unstructured* data from python primitives into *model*.
@@ -199,7 +215,7 @@ class PydanticSerializer(BaseSerializer):
                 For example, it is fine for a request validation
                 to be less strict in some cases and allow type coercition.
                 But, response types need to be strongly validated.
-            rebuild_namespace: Optional namespace to rebuild the type adapter.
+            extra_namespace: Optional namespace to rebuild the type adapter.
                 Should be used when there are forward references
                 that pydantic cannot solve by itself.
 
@@ -209,17 +225,67 @@ class PydanticSerializer(BaseSerializer):
         Raises:
             pydantic_core.ValidationError: When parsing can't be done.
 
+        .. versionchanged:: 0.13.0
+            Added *rebuild_namespace* parameter
+            was renamed to be *extra_namespace*.
+
         """
         # At this point `_get_cached_type_adapter(model)` was already called
         # during the optimizer stage, so it will be very fast to use in runtime.
         adapter = _get_cached_type_adapter(model)
-        if rebuild_namespace is not None:
-            adapter.rebuild(_types_namespace=rebuild_namespace)
+        if extra_namespace is not None:
+            adapter.rebuild(_types_namespace=extra_namespace)
         return adapter.validate_python(
             unstructured,
             strict=strict,
             **cls.to_model_kwargs,
         )
+
+    @override
+    @classmethod
+    def build_context_model(
+        cls,
+        name: str,
+        fields: Mapping[str, ContextField],
+    ) -> ContextModel:
+        """
+        Build the model to parse the whole request context at once.
+
+        We build a :class:`typing.TypedDict` when there are no defaults,
+        because it is the fastest thing that ``pydantic`` can validate
+        and it does not need any conversion into keyword arguments.
+
+        When some fields have defaults, we build a regular
+        :func:`dataclasses.dataclass`, since ``TypedDict`` cannot have them.
+        Defaults are passed as-is, so :mod:`dataclasses` rules apply:
+        mutable defaults like ``[]`` or non-frozen models are not allowed.
+
+        .. versionadded:: 0.16.0
+
+        """
+        if all(field.default is EMPTY for field in fields.values()):
+            annotations = {
+                field_name: field.annotation
+                for field_name, field in fields.items()
+            }
+            typed_dict = TypedDict(  # type: ignore[misc]
+                name,  # pyright: ignore[reportArgumentType]  # pyrefly: ignore[name-mismatch]
+                annotations,  # pyright: ignore[reportArgumentType]
+                total=True,
+                closed=True,
+            )
+            _get_cached_type_adapter(typed_dict)  # prepare during import time
+            return ContextModel(typed_dict)
+
+        # We don't use `slots=True` here on purpose:
+        # `vars()` is the fastest way to unpack a dataclass instance,
+        # it requires an instance `__dict__` to exist:
+        dataclass = dataclasses.make_dataclass(
+            name,
+            context_field_tuples(fields),
+        )
+        _get_cached_type_adapter(dataclass)  # prepare during import time
+        return ContextModel(dataclass, to_kwargs=vars)
 
     @override
     @classmethod
@@ -239,7 +305,7 @@ class PydanticSerializer(BaseSerializer):
         """
         return _get_cached_type_adapter(Any).dump_python(
             structured,
-            mode='json',
+            mode=_JSON_MODE,
             **cls.to_json_kwargs,
         )
 
@@ -287,6 +353,8 @@ class PydanticFastSerializer(PydanticSerializer):
 
     """
 
+    __slots__ = ()
+
     @classmethod
     @override
     def serialize(cls, structure: Any, *, renderer: Renderer) -> bytes:
@@ -325,6 +393,12 @@ class PydanticFastSerializer(PydanticSerializer):
                 **cls.to_model_kwargs,
             )
         except pydantic_core.ValidationError as exc:
+            # Corner case: an empty body is `None` for us,
+            # just like `JsonParser` treats it. Happens for `204` responses.
+            # We do this here, because we don't want
+            # a penalty for all positive cases.
+            if buffer == b'':
+                return None
             raise DataParsingError(exc.errors()[0]['msg']) from exc
 
     @classmethod

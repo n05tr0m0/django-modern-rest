@@ -3,12 +3,7 @@ from http import HTTPStatus
 from typing import Any, Final
 
 import pytest
-
-try:
-    import redis
-except ImportError:  # pragma: no cover
-    pytest.skip(reason='redis is not installed', allow_module_level=True)
-
+import redis
 from dirty_equals import IsOneOf
 from django.http import HttpResponse
 from redis import asyncio as aioredis
@@ -110,7 +105,7 @@ def test_throttle_sync_leaky_bucket(
                     backend=(
                         backend_cls(redis_client)
                         if issubclass(backend_cls, SyncRedis)
-                        else backend_cls()
+                        else backend_cls(allow_unsafe_cache=None)
                     ),
                     algorithm=LeakyBucket(),
                 ),
@@ -166,7 +161,7 @@ def test_throttle_sync_leaky_bucket_limit_reached(
                     backend=(
                         backend_cls(redis_client)
                         if issubclass(backend_cls, SyncRedis)
-                        else backend_cls()
+                        else backend_cls(allow_unsafe_cache=None)
                     ),
                     algorithm=LeakyBucket(),
                 ),

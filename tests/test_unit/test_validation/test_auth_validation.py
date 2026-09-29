@@ -1,12 +1,15 @@
 import pytest
+from typing_extensions import override
 
 from dmr import Controller, modify
 from dmr.exceptions import EndpointMetadataError
+from dmr.metadata import EndpointMetadata
 from dmr.plugins.pydantic import PydanticSerializer
 from dmr.security.django_session import (
     DjangoSessionAsyncAuth,
     DjangoSessionSyncAuth,
 )
+from dmr.serializer import BaseSerializer
 
 
 def test_sync_endpoint_requires_sync_auth() -> None:
@@ -14,7 +17,7 @@ def test_sync_endpoint_requires_sync_auth() -> None:
     with pytest.raises(EndpointMetadataError, match=r'base\.SyncAuth'):
 
         class _SyncController(Controller[PydanticSerializer]):
-            @modify(auth=[DjangoSessionAsyncAuth()])
+            @modify(auth=[DjangoSessionAsyncAuth()])  # type: ignore[deprecated]
             def get(self) -> str:
                 raise NotImplementedError
 
@@ -24,7 +27,7 @@ def test_async_endpoint_requires_async_auth() -> None:
     with pytest.raises(EndpointMetadataError, match=r'base\.AsyncAuth'):
 
         class _AsyncController(Controller[PydanticSerializer]):
-            @modify(auth=[DjangoSessionSyncAuth()])
+            @modify(auth=[DjangoSessionSyncAuth()])  # type: ignore[deprecated]
             async def get(self) -> str:
                 raise NotImplementedError
 
@@ -48,4 +51,25 @@ def test_async_controller_requires_async_auth() -> None:
             auth = [DjangoSessionSyncAuth()]
 
             async def get(self) -> str:
+                raise NotImplementedError
+
+
+class _RaisingAuth(DjangoSessionSyncAuth):
+    @override
+    def validate(
+        self,
+        controller_cls: type[Controller[BaseSerializer]],
+        metadata: EndpointMetadata,
+    ) -> None:
+        raise EndpointMetadataError('Test')
+
+
+def test_auth_validate_hook_is_called() -> None:
+    """Auth.validate hook is called during endpoint validation."""
+    with pytest.raises(EndpointMetadataError, match='Test'):
+
+        class _Controller(Controller[PydanticSerializer]):
+            auth = (_RaisingAuth(),)
+
+            def post(self) -> str:
                 raise NotImplementedError

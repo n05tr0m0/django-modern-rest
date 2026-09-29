@@ -1,15 +1,14 @@
 from typing import TYPE_CHECKING
 
-from dmr.internal.json import json_dump as _json_dump
+from dmr.internal.json import json_dumps as _json_dumps
 
 if TYPE_CHECKING:
-    from dmr.openapi.objects.openapi import ConvertedSchema
-    from dmr.openapi.views.base import DumpedSchema
+    from dmr.openapi.mappers.schema_normalization import DumpedSchema
 
 
-def json_dump(schema: 'ConvertedSchema') -> 'DumpedSchema':
+def json_dumps(schema: 'DumpedSchema') -> str:
     """
-    Serialize `ConvertedSchema` to a decoded JSON string.
+    Serialize `DumpedSchema` to a decoded JSON string.
 
     Args:
         schema: Converted OpenAPI schema to be serialized.
@@ -18,5 +17,7 @@ def json_dump(schema: 'ConvertedSchema') -> 'DumpedSchema':
         JSON string representation of the schema.
 
     .. versionadded:: 0.7.0
+    .. versionchanged:: 0.15.0
+        Renamed from ``json_dump`` to ``json_dumps``.
     """
-    return _json_dump(schema)
+    return _json_dumps(schema)

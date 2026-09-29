@@ -1,13 +1,16 @@
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from django.http import HttpRequest
-from typing_extensions import override
+from django.views.decorators.debug import sensitive_variables
 
+from dmr.metadata import EndpointMetadata
 from dmr.openapi.objects import Reference, SecurityScheme
-from dmr.security.token.auth.base import (
-    _BaseTokenAsyncAuth,  # noqa: WPS450  # pyright: ignore[reportPrivateUsage]
-    _BaseTokenSyncAuth,  # noqa: WPS450  # pyright: ignore[reportPrivateUsage]
-)
+from dmr.security.token.auth.base import BaseTokenAsyncAuth, BaseTokenSyncAuth
+from dmr.security.token.token import DEFAULT_TOKEN_ALGORITHM, DEFAULT_TOKEN_SALT
+
+if TYPE_CHECKING:
+    from dmr.controller import Controller
+    from dmr.serializer import BaseSerializer
 
 _AUTH_DESCRIPTION: Final = 'Opaque token authentication'
 
@@ -18,9 +21,27 @@ class _BaseHeaderTokenAuth:
     header_name: str
     prefix: str
     security_scheme_name: str
+    www_authenticate: bool
 
     @property
-    def security_schemes(self) -> dict[str, SecurityScheme | Reference]:
+    def www_authenticate_challenge(self) -> str | None:
+        """
+        Challenge naming the scheme this auth expects, like ``Bearer``.
+
+        Returns ``None`` for a custom *header_name*, because a challenge
+        can only ask the client for the ``Authorization`` header.
+        Also returns ``None`` for an empty *prefix*: without one
+        there is no scheme name to build a challenge from.
+        """
+        if not self.www_authenticate or self.header_name != 'Authorization':
+            return None
+        return self.prefix.strip() or None
+
+    def security_schemes(
+        self,
+        metadata: EndpointMetadata,
+        controller_cls: type['Controller[BaseSerializer]'],
+    ) -> dict[str, 'SecurityScheme | Reference']:
         """Provides a security schema definition."""
         if self.header_name == 'Authorization':
             return {
@@ -39,37 +60,40 @@ class _BaseHeaderTokenAuth:
             ),
         }
 
-    def _raw_token_from_header(
-        self,
-        request: HttpRequest,
-        *,
-        header_name: str,
-        prefix: str,
-    ) -> str | None:
-        """Read token from header and strip expected prefix when configured."""
-        header_value = request.headers.get(header_name)
+    @sensitive_variables()
+    def get_raw_token(self, request: HttpRequest) -> str | None:
+        """Read the raw token from the request header, stripping any prefix."""
+        header_value = request.headers.get(self.header_name)
         if header_value is None:
             return None
-        if prefix:
-            expected = f'{prefix} '
+        if self.prefix:
+            expected = f'{self.prefix} '
             if not header_value.startswith(expected):
                 return None
             return header_value[len(expected) :]
         return header_value
 
 
-class HeaderTokenSyncAuth(_BaseHeaderTokenAuth, _BaseTokenSyncAuth):
-    """Sync opaque token auth; reads from ``X-API-Token`` by default."""
+class HeaderTokenSyncAuth(_BaseHeaderTokenAuth, BaseTokenSyncAuth):
+    """
+    Sync opaque token auth; reads from ``X-API-Token`` by default.
 
-    __slots__ = ('header_name', 'prefix')
+    .. versionadded:: 0.12.0
+    """
 
-    def __init__(
+    __slots__ = ('header_name', 'prefix', 'www_authenticate')
+
+    def __init__(  # noqa: WPS211
         self,
         *,
         header_name: str = 'X-API-Token',
         prefix: str = '',
+        www_authenticate: bool = True,
         security_scheme_name: str = 'token',
-        update_last_used: bool = True,
+        update_last_used: bool = False,
+        token_secret: str | None = None,
+        token_salt: str = DEFAULT_TOKEN_SALT,
+        token_algorithm: str = DEFAULT_TOKEN_ALGORITHM,
     ) -> None:
         """
         Apply possible customizations.
@@ -82,6 +106,9 @@ class HeaderTokenSyncAuth(_BaseHeaderTokenAuth, _BaseTokenSyncAuth):
           Set to ``'Token'`` or ``'Bearer'`` when *header_name* is
           ``'Authorization'`` - e.g. ``prefix='Token'`` requires the client
           to send ``Authorization: Token <raw-token>``.
+        - *www_authenticate* - whether ``401`` responses advertise this auth
+          in the ``WWW-Authenticate`` header. Only has an effect when
+          *header_name* is ``'Authorization'`` and *prefix* is set.
         - *security_scheme_name* - name used in OpenAPI security scheme map.
 
         **Common configurations:**
@@ -108,46 +135,44 @@ class HeaderTokenSyncAuth(_BaseHeaderTokenAuth, _BaseTokenSyncAuth):
         super().__init__(
             security_scheme_name=security_scheme_name,
             update_last_used=update_last_used,
+            token_secret=token_secret,
+            token_salt=token_salt,
+            token_algorithm=token_algorithm,
         )
         self.header_name = header_name
         self.prefix = prefix
-
-    @override
-    def get_raw_token(self, request: HttpRequest) -> str | None:
-        """Read the raw token from the request header, stripping any prefix."""
-        return self._raw_token_from_header(
-            request,
-            header_name=self.header_name,
-            prefix=self.prefix,
-        )
+        self.www_authenticate = www_authenticate
 
 
-class HeaderTokenAsyncAuth(_BaseHeaderTokenAuth, _BaseTokenAsyncAuth):
-    """Async opaque token auth; reads from ``X-API-Token`` by default."""
+class HeaderTokenAsyncAuth(_BaseHeaderTokenAuth, BaseTokenAsyncAuth):
+    """
+    Async opaque token auth; reads from ``X-API-Token`` by default.
 
-    __slots__ = ('header_name', 'prefix')
+    .. versionadded:: 0.12.0
+    """
 
-    def __init__(
+    __slots__ = ('header_name', 'prefix', 'www_authenticate')
+
+    def __init__(  # noqa: WPS211
         self,
         *,
         header_name: str = 'X-API-Token',
         prefix: str = '',
+        www_authenticate: bool = True,
         security_scheme_name: str = 'token',
-        update_last_used: bool = True,
+        update_last_used: bool = False,
+        token_secret: str | None = None,
+        token_salt: str = DEFAULT_TOKEN_SALT,
+        token_algorithm: str = DEFAULT_TOKEN_ALGORITHM,
     ) -> None:
         """Apply possible customizations. See :class:`HeaderTokenSyncAuth`."""
         super().__init__(
             security_scheme_name=security_scheme_name,
             update_last_used=update_last_used,
+            token_secret=token_secret,
+            token_salt=token_salt,
+            token_algorithm=token_algorithm,
         )
         self.header_name = header_name
         self.prefix = prefix
-
-    @override
-    def get_raw_token(self, request: HttpRequest) -> str | None:
-        """Read the raw token from the request header, stripping any prefix."""
-        return self._raw_token_from_header(
-            request,
-            header_name=self.header_name,
-            prefix=self.prefix,
-        )
+        self.www_authenticate = www_authenticate

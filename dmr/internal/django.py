@@ -33,11 +33,11 @@
 
 
 from collections.abc import Mapping
-from io import BytesIO
 from typing import Any, Final, TypeAlias
 
 from django.core.exceptions import TooManyFilesSent
 from django.core.files.uploadedfile import UploadedFile
+from django.db import models
 from django.http.multipartparser import MultiPartParser, MultiPartParserError
 from django.http.request import HttpRequest, QueryDict
 from django.utils.datastructures import CaseInsensitiveMapping, MultiValueDict
@@ -59,20 +59,26 @@ def parse_headers(
     """
     Split headers specified in *split_commas* on ``','`` char.
 
+    Each part is stripped of surrounding whitespace,
+    because it is a part of the list header grammar and not a part
+    of the values, see RFC 9110, section 5.6.1.
+
     Make sure that all headers in *split_commas* have lower-case names.
     Do not pass empty *split_commas* parameter.
     """
     parsed_headers: dict[str, str | list[str]] = {}
     for header_key, header_value in headers.items():
         if header_key.lower() in split_commas:
-            parsed_headers[header_key] = header_value.split(',')
+            parsed_headers[header_key] = [
+                header_part.strip() for header_part in header_value.split(',')
+            ]
         else:
             parsed_headers[header_key] = header_value
     return CaseInsensitiveMapping(parsed_headers)
 
 
 def convert_multi_value_dict(
-    to_parse: 'MultiValueDict[str, Any]',
+    to_parse: MultiValueDict[str, Any],
     *,
     force_list: frozenset[str],
     cast_null: frozenset[str],
@@ -142,7 +148,18 @@ def parse_as_post(request: HttpRequest) -> None:
     """
     # This code is adapted from Django itself:
     if request.content_type == 'multipart/form-data':
-        request_data = BytesIO(request.body)
+        # Use Django's current request stream directly instead of materializing
+        # the multipart body in DMR. This keeps DMR itself streaming-friendly,
+        # but it isn't an "always zero-copy" guarantee: if something has already
+        # accessed `request.body`, Django has cached the whole body in memory;
+        # and while parsing, Django's upload handlers decide whether uploaded
+        # files are kept in memory or written to temporary files.
+        #
+        # Some custom or test request objects may not initialize `_stream`.
+        # Falling back to `request` still gives `MultiPartParser` a file-like
+        # object with `read()` methods.
+        request_data = getattr(request, '_stream', request)
+
         # This was introduced in Django 6.1:
         multipart_parser_cls = getattr(
             request,
@@ -167,7 +184,7 @@ def parse_as_post(request: HttpRequest) -> None:
             request._post = post  # type: ignore[attr-defined]
             request._files = files  # type: ignore[attr-defined]
 
-        request._dmr_parsed_as_post = True  # type: ignore[attr-defined]
+        request.__dmr_parsed_as_post__ = True  # type: ignore[attr-defined]
         return
 
     # Django only supports two content types natively,
@@ -186,7 +203,7 @@ _FileMetadata: TypeAlias = dict[str, Any]
 
 
 def extract_files_metadata(
-    request_files: MultiValueDict[str, UploadedFile],
+    request_files: MultiValueDict[str, 'UploadedFile[Any]'],
     force_list: frozenset[str],
 ) -> Mapping[str, _FileMetadata | list[_FileMetadata]]:
     """Extracts file metadata from ``request.FILES`` from Django."""
@@ -213,7 +230,7 @@ _FILE_ATTRS: Final = (
 
 
 def _process_files_metadata(
-    uploaded: UploadedFile | list[UploadedFile],
+    uploaded: 'UploadedFile[Any] | list[UploadedFile[Any]]',
 ) -> _FileMetadata | list[_FileMetadata]:
     if isinstance(uploaded, UploadedFile):
         return _process_file_metadata(uploaded)
@@ -221,8 +238,28 @@ def _process_files_metadata(
     return [_process_file_metadata(single_file) for single_file in uploaded]
 
 
-def _process_file_metadata(uploaded: UploadedFile) -> _FileMetadata:
+def _process_file_metadata(uploaded: 'UploadedFile[Any]') -> _FileMetadata:
     return {
         attr_name: getattr(uploaded, attr_name, None)
         for attr_name in _FILE_ATTRS
     }
+
+
+def get_model_pks(
+    model: type[models.Model],
+) -> 'list[models.Field[Any, Any]]':  # pragma: no cover
+    """
+    Get model primary keys.
+
+    pk_fields property was added in django5.2
+    along with ``CompositePrimaryKey``.
+
+    Before, people were creating dummy primary
+    key and specifying ``Meta.unique_together``.
+
+    So for django<5.2 this function will always
+    return a single primary key.
+    """
+    if hasattr(model._meta, 'pk_fields'):
+        return model._meta.pk_fields
+    return [model._meta.pk]

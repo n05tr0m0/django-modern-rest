@@ -106,7 +106,7 @@ async def test_parse_headers_ignored_async_content_type(
         headers={
             'Content-Type': 'application/xml',
             'X-API-Token': '123',
-            'Authorization': basic_auth('test', 'pass', prefix=''),
+            'Authorization': basic_auth('test', 'pass'),
         },
     )
 
@@ -150,10 +150,7 @@ def test_body_with_invalid_utf8(dmr_client: DMRClient, *, body: bytes) -> None:
     }
 
 
-def test_single_view_sync405(
-    dmr_client: DMRClient,
-    faker: Faker,
-) -> None:
+def test_single_view_sync405(dmr_client: DMRClient) -> None:
     """Ensure that direct routes raise 405."""
     response = dmr_client.delete(
         reverse('api:controllers:parse_headers'),
@@ -175,7 +172,6 @@ def test_single_view_sync405(
 
 def test_single_view_i18n_sync405(
     dmr_client: DMRClient,
-    faker: Faker,
     reset_language: None,
 ) -> None:
     """Ensure that direct routes raise 405 with i18n support."""
@@ -197,10 +193,7 @@ def test_single_view_i18n_sync405(
     })
 
 
-def test_single_view_async405(
-    dmr_client: DMRClient,
-    faker: Faker,
-) -> None:
+def test_single_view_async405(dmr_client: DMRClient) -> None:
     """Ensure that direct async routes raise 405."""
     response = dmr_client.delete(
         reverse('api:controllers:async_parse_headers'),

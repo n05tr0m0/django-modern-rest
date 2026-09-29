@@ -1,11 +1,14 @@
 import dataclasses
 import uuid
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeAlias, final
 
-from django.urls import URLPattern, converters
+from django.urls import converters
 from typing_extensions import TypedDict
 
+from dmr.internal.regex import parse_named_groups
+from dmr.internal.types import EMPTY
+from dmr.openapi.collector import InternalRouteMetadata
 from dmr.openapi.objects import (
     MediaType,
     Parameter,
@@ -15,7 +18,8 @@ from dmr.openapi.objects import (
 )
 
 if TYPE_CHECKING:
-    from dmr.components import ComponentParser
+    from dmr.components import ComponentParserSpec
+    from dmr.controller import Controller
     from dmr.metadata import EndpointMetadata
     from dmr.openapi.core.context import OpenAPIContext
     from dmr.serializer import BaseSerializer
@@ -23,56 +27,93 @@ if TYPE_CHECKING:
 
 _RequestBody: TypeAlias = RequestBody | Reference | None
 _RequestParameters: TypeAlias = list[Parameter | Reference] | None
-_ConvertersMapping: TypeAlias = Mapping[type[Any], Any]
+
+_SLUG_REGEX: Final = converters.SlugConverter.regex
+
+#: Path parameters are special: they are always required.
+_PATH_LOCATION: Final = 'path'
+
+# In json schema `pattern` is a search, but a url converter always matches
+# the whole value, so we anchor the regex on both sides.
+# It is also wrapped into a group, because anchors bind weaker than `|`:
+# `^json|xml$` means "starts with `json`" or "ends with `xml`".
+_SLUG_PATTERN: Final = f'^(?:{_SLUG_REGEX})$'
+
+
+@final
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConverterSchema:
+    """
+    Prepared OpenAPI schema of a single Django path converter.
+
+    Built-in converters use it to document themselves, and custom ones can
+    provide their own instance through the ``__dmr_converter_schema__``
+    attribute. Explicit values always override the generated ones.
+    """
+
+    model: Any = str
+    pattern: str | None = None
+    description: str | None = None
+
+
+_ConvertersMapping: TypeAlias = Mapping[type[Any], ConverterSchema]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class ComponentParserGenerator:
+class ComponentParserGenerator:  # noqa: WPS214
     """Generator for OpenAPI ``Parameter`` objects."""
 
     _context: 'OpenAPIContext'
 
     # Class API:
     _converters: ClassVar[_ConvertersMapping] = {
-        converters.IntConverter: int,
-        converters.UUIDConverter: uuid.UUID,
-        # Any custom registered converter can have `__dmr_converter_schema__`
-        # attribute to resolve our schema.
+        converters.IntConverter: ConverterSchema(model=int),
+        converters.UUIDConverter: ConverterSchema(model=uuid.UUID),
+        converters.SlugConverter: ConverterSchema(pattern=_SLUG_PATTERN),
+        converters.PathConverter: ConverterSchema(
+            description='Can contain slashes',
+        ),
+        # Any custom registered converter can have a `__dmr_converter_schema__`
+        # attribute with either a model or a `ConverterSchema` instance.
     }
 
     def __call__(
         self,
         operation_id: str,
-        pattern: URLPattern,
+        route_metadata: InternalRouteMetadata,
         metadata: 'EndpointMetadata',
-        serializer: type['BaseSerializer'],
+        controller_cls: type['Controller[BaseSerializer]'],
     ) -> tuple[_RequestBody, _RequestParameters]:
-        """Generate parameters from parsers."""
+        """
+        Generate parameters from parsers.
+
+        Components with default values are optional:
+        their request bodies are not required
+        and their parameters are not required as well.
+        Except for path parameters, they are always required by OpenAPI.
+
+        .. versionchanged:: 0.16.0
+            Now accepts *controller_cls* parameter instead of *serializer*.
+            Now accepts *route_metadata* parameter instead of *pattern*.
+            Components with default values are now optional.
+
+        """
         params_list: list[Parameter | Reference] = []
         request_body: RequestBody | None = None
 
-        for component in metadata.component_parsers:
-            schema = self._call_component(
-                *component,
-                metadata,
-                serializer,
-            )
-
+        for spec in metadata.component_parsers:
+            schema = self._call_component(spec, metadata, controller_cls)
             if isinstance(schema, RequestBody):
                 request_body = self._merge_bodies(schema, request_body)
-            elif isinstance(schema, list):  # pyright: ignore[reportUnnecessaryIsInstance]
-                params_list.extend(schema)
             else:
-                raise TypeError(
-                    f'Returning {type(schema)!r} '
-                    'from ComponentParser.get_schema is not supported',
-                )
+                params_list.extend(schema)
 
         pattern_param = self._parse_pattern(
             operation_id,
-            pattern,
+            route_metadata,
             params_list,
-            serializer,
+            metadata,
+            controller_cls,
         )
         if pattern_param is not None:
             params_list.extend(pattern_param)
@@ -81,75 +122,170 @@ class ComponentParserGenerator:
 
     def _call_component(
         self,
-        parser: 'ComponentParser',
-        model: Any,
-        model_meta: tuple[Any, ...],
+        spec: 'ComponentParserSpec',
         metadata: 'EndpointMetadata',
-        serializer: type['BaseSerializer'],
+        controller_cls: type['Controller[BaseSerializer]'],
     ) -> list[Parameter | Reference] | RequestBody:
-        return parser.get_schema(
-            model,
-            model_meta,
-            serializer=serializer,
+        schema = spec.parser.get_schema(
+            spec.model,
+            spec.model_meta,
             metadata=metadata,
+            controller_cls=controller_cls,
             context=self._context,
         )
+        if isinstance(schema, RequestBody):
+            if spec.default is not EMPTY:
+                schema.required = False
+            return schema
+        if isinstance(schema, list):  # pyright: ignore[reportUnnecessaryIsInstance]
+            if spec.default is not EMPTY:
+                self._mark_optional(schema)
+            return schema
+        raise TypeError(
+            f'Returning {type(schema)!r} '
+            'from ComponentParser.get_schema is not supported',
+        )
+
+    def _mark_optional(
+        self,
+        params_list: list[Parameter | Reference],
+    ) -> None:
+        for param_spec in params_list:
+            # OpenAPI requires all path parameters to be required:
+            if (
+                isinstance(param_spec, Parameter)
+                and param_spec.param_in != _PATH_LOCATION
+            ):
+                param_spec.required = None
 
     def _parse_pattern(
         self,
         operation_id: str,
-        pattern: URLPattern,
+        route_metadata: InternalRouteMetadata,
         parameter_specs: list[Parameter | Reference],
-        serializer: type['BaseSerializer'],
+        metadata: 'EndpointMetadata',
+        controller_cls: type['Controller[BaseSerializer]'],
     ) -> list[Parameter | Reference] | None:
         # TODO: support `parameter` references:
         if any(
-            param_spec.param_in == 'path'
+            param_spec.param_in == _PATH_LOCATION
             for param_spec in parameter_specs
             if isinstance(param_spec, Parameter)
         ):
+            # TODO: should we validate `Path` component on `Router` creation?
             # We already have some `Path` component, so move on.
             return None
 
-        params_list: list[Parameter | Reference] = []
+        # `re_path()` and `RegexPattern`:
+        if route_metadata.is_regex:
+            return self._parse_regex(
+                operation_id,
+                route_metadata,
+                metadata,
+                controller_cls,
+            )
 
         # `path()` and `RoutePattern`:
-        schema = {
-            converter_name: self._converters.get(
-                type(converter),  # pyright: ignore[reportUnknownArgumentType]
-                getattr(converter, '__dmr_converter_schema__', str),
-            )
-            for converter_name, converter in pattern.pattern.converters.items()
-        }
-        if schema:
-            params_list.extend(
-                self._context.generators.parameter(
-                    TypedDict(f'{operation_id}_Path', schema),  # type: ignore[operator]
-                    (),
-                    serializer,
-                    self._context,
-                    param_in='path',
-                ),
-            )
-            return params_list
-
-        # `re_path()` and `RegexPattern`:
-        regex = pattern.pattern.regex
-        schema = dict.fromkeys(
-            regex.groupindex,
-            str,
+        return self._parse_converters(
+            operation_id,
+            route_metadata,
+            metadata,
+            controller_cls,
         )
-        if schema:
-            params_list.extend(
+
+    def _add_group_patterns(
+        self,
+        params_list: list[Parameter | Reference],
+        regex_source: str,
+    ) -> list[Parameter | Reference]:
+        # In json schema `pattern` is a search, but a url group always
+        # matches the whole value, so we anchor the sub-pattern:
+        # `(?P<year>[0-9]{4})` becomes `^(?:[0-9]{4})$`.
+        # It is also wrapped, because anchors bind weaker than `|`:
+        # `^json|xml$` would mean "starts with `json`" or "ends with `xml`",
+        # while `^(?:json|xml)$` means what `(?P<format>json|xml)` matches.
+        named_groups = {
+            group_name: f'^(?:{group_source})$'
+            for group_name, group_source in parse_named_groups(
+                regex_source,
+            ).items()
+        }
+        for param_spec in params_list:
+            # We've just built these parameters from a `TypedDict`
+            # of plain `str` fields, one per named group,
+            # so they all have inline schemas and none of them is a reference:
+            assert isinstance(param_spec, Parameter)  # noqa: S101
+            assert isinstance(param_spec.schema, Schema)  # noqa: S101
+            param_spec.schema.pattern = named_groups.get(param_spec.name)
+        return params_list
+
+    def _parse_converters(
+        self,
+        operation_id: str,
+        route_metadata: InternalRouteMetadata,
+        metadata: 'EndpointMetadata',
+        controller_cls: type['Controller[BaseSerializer]'],
+    ) -> list[Parameter | Reference] | None:
+        prepared = {
+            converter_name: _converter_schema(converter, self._converters)
+            for converter_name, converter in route_metadata.converters().items()
+        }
+        if not prepared:
+            return None
+        return self._add_converter_schemas(
+            self._context.generators.parameter(
+                TypedDict(  # type: ignore[operator]
+                    f'{operation_id}_Path',
+                    _converter_models(prepared),
+                ),
+                (),
+                metadata,
+                controller_cls,
+                param_in=_PATH_LOCATION,
+            ),
+            prepared,
+        )
+
+    def _parse_regex(
+        self,
+        operation_id: str,
+        route_metadata: InternalRouteMetadata,
+        metadata: 'EndpointMetadata',
+        controller_cls: type['Controller[BaseSerializer]'],
+    ) -> list[Parameter | Reference] | None:
+        assert route_metadata.is_regex  # noqa: S101
+        regex = route_metadata.regex()
+        schema = dict.fromkeys(regex.groupindex, str)
+        return (
+            self._add_group_patterns(
                 self._context.generators.parameter(
                     TypedDict(f'{operation_id}_RePath', schema),  # type: ignore[operator]
                     (),
-                    serializer,
-                    self._context,
-                    param_in='path',
+                    metadata,
+                    controller_cls,
+                    param_in=_PATH_LOCATION,
                 ),
+                regex.pattern,
             )
-        return params_list or None
+            or None
+        )
+
+    def _add_converter_schemas(
+        self,
+        params_list: list[Parameter | Reference],
+        prepared: Mapping[str, ConverterSchema],
+    ) -> list[Parameter | Reference]:
+        for param_spec in params_list:
+            # We've just built these parameters, one per converter:
+            assert isinstance(param_spec, Parameter)  # noqa: S101
+            schema = param_spec.schema
+            assert isinstance(schema, Schema)  # noqa: S101
+            converter_schema = prepared[param_spec.name]
+            schema.pattern = converter_schema.pattern or schema.pattern
+            schema.description = (
+                converter_schema.description or schema.description
+            )
+        return params_list
 
     def _merge_bodies(
         self,
@@ -163,10 +299,13 @@ class ComponentParserGenerator:
         return RequestBody(
             content=new_content,
             description=(
-                (schema.description or '')
-                + ' '
-                + (new_schema.description or '')
-            ).strip(),
+                (
+                    (schema.description or '')
+                    + ' '
+                    + (new_schema.description or '')
+                ).strip()
+                or None
+            ),
             required=schema.required or new_schema.required,
         )
 
@@ -174,13 +313,18 @@ class ComponentParserGenerator:
         self,
         new_schema: RequestBody,
         schema: RequestBody,
-    ) -> dict[str, 'MediaType']:
-        new_content: dict[str, MediaType] = {}
-        for media_name, media_type in new_schema.content.items():
-            media_items: list[Schema | Reference] = []
+    ) -> dict[str, MediaType | Reference]:
+        new_content: dict[str, MediaType | Reference] = {}
+        # Sorted by content type, custom components can return any order:
+        for media_name, media_type in sorted(new_schema.content.items()):
+            # We've just built these bodies from component parsers,
+            # so all of them have inline media types, never references:
+            assert isinstance(media_type, MediaType)  # noqa: S101
+            media_items: list[Schema] = []
             if media_type.schema:  # pragma: no cover:
                 media_items.append(media_type.schema)
             existing_content = schema.content.get(media_name)
+            assert not isinstance(existing_content, Reference)  # noqa: S101
             # TODO: remove pragma after implementing conditional types
             # for `FileMetadata[]` component
             if existing_content and existing_content.schema:  # pragma: no cover
@@ -190,3 +334,27 @@ class ComponentParserGenerator:
                 schema=Schema(all_of=media_items),
             )
         return new_content
+
+
+def _converter_models(
+    prepared: Mapping[str, ConverterSchema],
+) -> dict[str, Any]:
+    return {
+        converter_name: converter_schema.model
+        for converter_name, converter_schema in prepared.items()
+    }
+
+
+def _converter_schema(
+    converter: Any,
+    known_converters: Mapping[type[Any], ConverterSchema],
+) -> ConverterSchema:
+    known = known_converters.get(
+        type(converter),  # pyright: ignore[reportUnknownArgumentType]
+    )
+    if known is not None:
+        return known
+    provided = getattr(converter, '__dmr_converter_schema__', None)
+    if isinstance(provided, ConverterSchema):
+        return provided
+    return ConverterSchema(model=provided or str)

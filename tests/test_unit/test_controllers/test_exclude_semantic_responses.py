@@ -1,25 +1,17 @@
 from http import HTTPMethod, HTTPStatus
-from typing import Final
 
-import pydantic
 import pytest
 from django.conf import LazySettings
 from django.http import HttpResponse
 
 from dmr import Controller, ResponseSpec, modify, validate
 from dmr.plugins.pydantic import PydanticSerializer
-from dmr.security.jwt import JWTSyncAuth
+from dmr.security.jwt import HeaderJWTSyncAuth
 from dmr.settings import Settings
-
-_MATCH_PATTERN: Final = 'cannot have a request body'
-
-
-class _BodyModel(pydantic.BaseModel):
-    name: str
 
 
 class _PerController(Controller[PydanticSerializer]):
-    auth = (JWTSyncAuth(),)
+    auth = (HeaderJWTSyncAuth(),)
     exclude_semantic_responses = frozenset((HTTPStatus.UNAUTHORIZED,))
 
     def get(self) -> str:
@@ -38,7 +30,7 @@ def test_exclude_semantic_responses_controller() -> None:
 
 
 class _PerEndpoint(Controller[PydanticSerializer]):
-    auth = (JWTSyncAuth(),)
+    auth = (HeaderJWTSyncAuth(),)
 
     @modify(exclude_semantic_responses={HTTPStatus.UNAUTHORIZED})
     def get(self) -> str:
@@ -80,7 +72,7 @@ def test_exclude_semantic_responses_settings(settings: LazySettings) -> None:
     }
 
     class _PerSettings(Controller[PydanticSerializer]):
-        auth = (JWTSyncAuth(),)
+        auth = (HeaderJWTSyncAuth(),)
 
         def get(self) -> str:
             raise NotImplementedError
@@ -101,7 +93,7 @@ def test_exclude_semantic_responses_overrides(settings: LazySettings) -> None:
     }
 
     class _PerSettings(Controller[PydanticSerializer]):
-        auth = (JWTSyncAuth(),)
+        auth = (HeaderJWTSyncAuth(),)
         exclude_semantic_responses = frozenset((
             HTTPStatus.UNPROCESSABLE_ENTITY,
         ))

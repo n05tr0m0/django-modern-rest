@@ -1,13 +1,21 @@
 OpenAPI
 =======
 
-We support OpenAPI versions from ``3.0.0`` through ``3.2.0``.
+We support OpenAPI versions from ``3.1.0`` through ``3.2.0``,
+including every object and field that these specifications define.
 
 .. note::
 
   By default, we use OpenAPI ``3.1.0``, since tooling such as Swagger, Scalar,
   Redoc, and Stoplight does not yet fully support the latest specification.
   You can track the `current progress here <https://github.com/wemake-services/django-modern-rest/issues/519>`_.
+
+.. important::
+
+  OpenAPI ``3.0.x`` is not supported. It predates JSON Schema,
+  while we generate all model schemas as JSON Schema with ``pydantic``
+  or ``msgspec``. Passing it to :class:`dmr.openapi.OpenAPIConfig`
+  raises a ``ValueError``.
 
 
 Setting up OpenAPI views
@@ -41,7 +49,7 @@ Here's how it works:
   :language: python
   :linenos:
 
-And then visit https://localhost:8000/docs/swagger/ (or any other renderer)
+And then visit http://localhost:8000/docs/swagger/ (or any other renderer)
 for the interactive docs.
 
 .. image:: /_static/images/swagger.png
@@ -57,6 +65,24 @@ What happens in the example above?
 3. You can modify these views
    to :func:`require auth / role / permissions / etc <django.contrib.auth.decorators.login_required>`
    as all other regular Django views
+
+Caching schema responses
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The schema conversion result is cached after the first conversion.
+
+For public JSON/YAML schema endpoints, you can also cache the serialized
+response with Django's
+`cache_page decorator in URLconf <https://docs.djangoproject.com/en/stable/topics/cache/#specifying-per-view-cache-in-the-urlconf>`_:
+
+.. literalinclude:: /examples/openapi/caching.py
+  :caption: urls.py
+  :language: python
+  :linenos:
+
+Cache hits skip JSON/YAML serialization. This example uses the ``default``
+Django cache; configure its backend through
+`CACHES <https://docs.djangoproject.com/en/stable/topics/cache/#setting-up-the-cache>`_.
 
 Requirements for OpenAPI UIs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -173,7 +199,7 @@ version control, or automating client generation.
   python manage.py dmr_export_schema myapp.urls:schema --format yaml --indent 2 --sort-keys
 
 The positional argument is the import path to your
-:class:`~dmr.openapi.objects.OpenAPI` instance,
+:class:`~dmr.openapi.openapi.OpenAPI` instance,
 using a colon to separate the module from the attribute name
 (e.g. ``myapp.urls:schema``).
 
@@ -203,6 +229,37 @@ including the spec version:
   :caption: urls.py
   :language: python
   :linenos:
+
+You can also pass ``components`` and other parts of the OpenAPI spec
+from some other source, like pre-existing schemas.
+
+To learn more, see :doc:`../external-views` guide.
+
+
+Customizing OpenAPI context
+---------------------------
+
+.. versionadded:: 0.16.0
+
+To replace some internal logic, subclass :class:`~dmr.openapi.OpenAPIContext`
+and set the corresponding ``*_cls`` attribute to your subclass.
+Pass an instance of your context to :func:`~dmr.openapi.build_schema`.
+Configuration values stay in :class:`~dmr.openapi.OpenAPIConfig`;
+behavioral customizations belong in the generator, registries,
+or merger subclasses.
+
+For example, this context generates operation IDs without controller names:
+
+.. literalinclude:: /examples/openapi/custom_context.py
+   :language: python
+   :linenos:
+
+``POST /api/user/`` now has the operation ID ``postApiUser``.
+Calling the base generator with an empty controller-name argument preserves
+explicit endpoint ``operation_id`` values and duplicate detection.
+If you replace the generation logic entirely, your implementation must
+handle explicit IDs and register the final ID with
+``self._context.registries.operation_id.register()`` to retain those guarantees.
 
 
 Customizing OpenAPI generation
@@ -252,6 +309,35 @@ To customize a schema, use the native methods.
 
   By default docstring or ``__doc__`` from the model is used as a description.
 
+.. rubric:: Customizing schema generator
+
+.. versionadded:: 0.16.0
+
+You can also change the native tools schema generation behavior.
+
+To do so, subclass the plugin's schema generator
+and create your own serializer that uses it.
+
+.. tabs::
+
+  .. tab:: msgspec
+
+    ``msgspec`` allows passing extra keyword arguments
+    to :func:`!msgspec.json.schema`
+    via :attr:`~dmr.plugins.msgspec.schema.MsgspecSchemaGenerator.json_schema_kwargs`.
+    Note that ``ref_template`` and ``mode`` are always defined by us.
+
+    Docs: https://msgspec.dev/jsonschema
+
+  .. tab:: pydantic
+
+    ``pydantic`` allows passing extra keyword arguments
+    to :meth:`pydantic.TypeAdapter.json_schema`
+    via :attr:`~dmr.plugins.pydantic.schema.PydanticSchemaGenerator.json_schema_kwargs`.
+    Note that ``ref_template`` and ``mode`` are always defined by us.
+
+    Docs: https://docs.pydantic.dev/latest/concepts/json_schema
+
 Customizing path items
 ~~~~~~~~~~~~~~~~~~~~~~
 
@@ -267,12 +353,21 @@ for :class:`~dmr.openapi.objects.PathItem`:
 
   By default docstring or ``__doc__`` from the controller
   is used to generate summary and description
-  for the :class:`~dmr.openapi.objects.PathItem`.
+  for the :class:`~dmr.openapi.objects.PathItem`:
+  its first paragraph becomes the summary
+  and everything after it becomes the description.
+  Set :attr:`~dmr.controller.Controller.summary`
+  or :attr:`~dmr.controller.Controller.description`
+  to ``None`` to leave them out of the schema.
+
+.. versionchanged:: 0.16.0
+  Controller docstrings are now used as the default
+  summary and description of a path item.
 
 Customizing operation
 ~~~~~~~~~~~~~~~~~~~~~
 
-:deco:`~dmr.endpoint.modify` and :deco:`~dmr.endpoint.validate`
+:data:`~dmr.endpoint.modify` and :data:`~dmr.endpoint.validate`
 can be used to customize the resulting :class:`~dmr.openapi.objects.Operation`
 metadata.
 
@@ -285,7 +380,16 @@ metadata.
 
   By default docstring or ``__doc__`` from endpoint's function definition
   is used to generate summary and description
-  for the :class:`~dmr.openapi.objects.Operation`.
+  for the :class:`~dmr.openapi.objects.Operation`,
+  by the same rules that a controller uses for its path item:
+  its first paragraph becomes the summary
+  and everything after it becomes the description.
+  Pass ``summary=None`` or ``description=None``
+  to leave them out of the schema.
+
+.. versionchanged:: 0.16.0
+  ``summary`` and ``description`` are now resolved one at a time.
+  Passing only one of them used to drop the docstring entirely.
 
 Customizing router-level metadata
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -301,14 +405,43 @@ to apply OpenAPI metadata to all operations in the router:
 - ``tags``: List of strings to group operations in OpenAPI documentation
 - ``deprecated``: Boolean flag to mark all operations in this router as deprecated
 
-These router-level settings are automatically merged with endpoint-level customizations
-set via :deco:`~dmr.endpoint.modify` or :deco:`~dmr.endpoint.validate`.
-Router tags are prepended to endpoint tags, and deprecated is set to ``True``
+Router tags are used for operations without controller-level
+or endpoint-level tags, and deprecated is set to ``True``
 if either the router or endpoint has it enabled.
 
 You can also set ``tags`` and ``deprecated`` at the individual endpoint level
-via :deco:`~dmr.endpoint.modify` to override or extend router-level settings.
+via :data:`~dmr.endpoint.modify` to override router-level settings.
 
+.. _customizing_tags_openapi:
+
+Customizing tags
+~~~~~~~~~~~~~~~~
+
+Tags can be defined on three levels:
+
+1. On a router with the ``tags`` parameter
+2. On a controller with
+   the :attr:`~dmr.controller.Controller.tags` attribute,
+   it applies to all endpoints of this controller
+3. On an endpoint with the ``tags`` parameter
+   of :data:`~dmr.endpoint.modify` or :data:`~dmr.endpoint.validate`
+
+The most specific level wins, tags are not merged:
+endpoint tags override controller tags,
+controller tags override router tags.
+Set ``tags=None`` to have no tags at all.
+To merge tags from different levels, do it explicitly:
+
+.. literalinclude:: /examples/openapi/controller_tags.py
+  :caption: views.py
+  :language: python
+  :linenos:
+
+.. versionadded:: 0.16.0
+  Controller-level ``tags``.
+
+.. versionchanged:: 0.16.0
+  Tags from different levels used to be merged.
 
 .. _customizing_parameter_openapi:
 
@@ -327,7 +460,6 @@ of :class:`dmr.openapi.objects.ParameterMetadata` annotation:
   :caption: views.py
   :language: python
   :linenos:
-
 
 .. _customizing_body_openapi:
 
@@ -400,6 +532,21 @@ but sometimes it is better than nothing.
 
   However, we recommend adding semantic named examples by hand.
 
+.. note::
+
+  Generated examples are written to the JSON Schema ``examples`` list,
+  not to the OAS ``example`` keyword, which OpenAPI 3.2 deprecates
+  inside Schema Objects. Examples that you write by hand
+  are never rewritten.
+
+.. note::
+
+  The seed is a global setting, it cannot be changed
+  per controller or per endpoint.
+  Generated examples are stored on shared ``components/schemas`` entries,
+  which several endpoints and controllers can reference at once.
+  See :data:`~dmr.settings.Settings.openapi_examples_seed` for the reasoning.
+
 
 Top level API
 -------------
@@ -411,13 +558,15 @@ This is how OpenAPI spec is generated, top level overview:
   :config: {"theme": "forest"}
 
   graph
+      Start[build_schema] --> OpenAPIContext[OpenAPIContext];
       Start[build_schema] --> Router[Router];
-      Router -->|for each controller| Controller[Controller.get_path_item];
+      OpenAPIContext --> OpenAPIConfig[OpenAPIConfig];
+      Router -->|for each controller| Controller[Controller.get_schema];
       Router -->|for each defined auth| SecurityScheme[Auth.security_scheme];
       Controller -->|for each endpoint| Endpoint[Endpoint.get_schema];
       Endpoint -->|for each component| ComponentParser[ComponentParser.get_schema]
       Endpoint -->|for each response| ResponseSpec[ResponseSpec.get_schema];
-      Endpoint -->|for each used auth| SecurityRequirement[Auth.security_requirement];
+      Endpoint -->|for each used auth| SecurityRequirements[Auth.security_requirements];
       ComponentParser -->|for each schema| Schema[serializer.schema_generator.get_schema];
       ResponseSpec -->|for each schema| Schema[serializer.schema_generator.get_schema];
 
@@ -445,9 +594,9 @@ Useful APIs for users to override:
   how :class:`~dmr.openapi.OpenAPIConfig`
   and :class:`~dmr.openapi.OpenAPIContext` are generated
 - :meth:`dmr.routing.Router.get_schema` to change
-  how :class:`~dmr.openapi.objects.OpenAPI`
+  how :class:`~dmr.openapi.openapi.OpenAPI`
   and :class:`~dmr.openapi.objects.Components` are generated
-- :meth:`dmr.controller.Controller.get_path_item` to change how
+- :meth:`dmr.controller.Controller.get_schema` to change how
   :class:`~dmr.openapi.objects.PathItem` objects are generated
 - :meth:`dmr.endpoint.Endpoint.get_schema` to change how
   :class:`~dmr.openapi.objects.Operation` is generated
@@ -456,7 +605,7 @@ Useful APIs for users to override:
 - :meth:`dmr.metadata.ResponseSpec.get_schema` to change how
   :class:`~dmr.openapi.objects.Response` objects are generated
 - :meth:`dmr.security.SyncAuth.security_schemes`
-  and :class:`dmr.security.SyncAuth.security_requirement` to change how
+  and :class:`dmr.security.SyncAuth.security_requirements` to change how
   :class:`~dmr.openapi.objects.SecurityScheme` and requirements are generated
 
 
@@ -470,8 +619,12 @@ This is the API every user needs:
 .. autoclass:: dmr.openapi.OpenAPIConfig
    :members:
 
+.. autofunction:: dmr.openapi.default_config
+
 .. autoclass:: dmr.openapi.OpenAPIContext
-  :members:
+   :members:
+
+.. autofunction:: dmr.openapi.load_schema
 
 All other objects that are only used if you decide to customize the schema
-are listed in :doc:`openapi-reference`.
+are listed in :ref:`openapi-reference`.

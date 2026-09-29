@@ -198,15 +198,16 @@ Here are our amazing people who made this project possible.
   pages/configuration.rst
   pages/plugins.rst
   pages/queryset.rst
+  pages/pagination.rst
   pages/negotiation.rst
   pages/error-handling.rst
   pages/throttling.rst
   pages/middleware.rst
   pages/validation.rst
   pages/reusable-code.rst
+  pages/external-views.rst
   pages/integrations.rst
   pages/internationalization.rst
-  pages/testing.rst
 
 
 .. toctree::
@@ -218,6 +219,8 @@ Here are our amazing people who made this project possible.
   pages/auth/django-session.rst
   pages/auth/jwt.rst
   pages/auth/token.rst
+  pages/auth/allauth.rst
+  pages/auth/custom.rst
 
 
 .. toctree::
@@ -235,16 +238,32 @@ Here are our amazing people who made this project possible.
 
   pages/openapi/schema.rst
   pages/openapi/openapi.rst
-  pages/openapi/openapi-reference.rst
+
+
+.. toctree::
+  :caption: Testing
+  :hidden:
+
+  pages/testing/tools-and-styles.rst
+  pages/testing/data-generation.rst
+  pages/testing/assertions.rst
+  pages/testing/authentication.rst
+  pages/testing/throttling.rst
+  pages/testing/property-based.rst
+  pages/testing/tracecov.rst
+  pages/testing/api-reference.rst
 
 
 .. toctree::
   :caption: AI and LLMs
   :hidden:
 
+  pages/ai/agent-skills.rst
   pages/ai/spec-first.rst
   pages/ai/dmr-from-ninja.rst
   pages/ai/dmr-from-drf.rst
+  pages/ai/dmr-from-dj-rest-auth.rst
+  pages/ai/dmr-upgrade.rst
 
 
 .. toctree::

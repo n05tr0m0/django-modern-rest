@@ -2,7 +2,7 @@ Django Ninja migration
 ======================
 
 By example, you can use agent skill
-`dmr-from-django-ninja <https://github.com/wemake-services/django-modern-rest/tree/master/.agents/skills/dmr-from-django-ninja>`_
+`dmr-from-django-ninja <https://github.com/wemake-services/django-modern-rest/tree/master/dmr/.agents/skills/dmr-from-django-ninja>`_
 when you already have an existing ``django-ninja`` or ``ninja-extra`` API
 and want to migrate transport layer to ``django-modern-rest``.
 
@@ -36,25 +36,28 @@ You can use prompt like this:
 How to use in Claude Code
 -------------------------
 
-1. Install the plugin:
+1. Add the marketplace and install the plugin:
 
 .. code-block:: text
 
-   /plugin install github.com/wemake-services/django-modern-rest
+   /plugin marketplace add wemake-services/django-modern-rest
+   /plugin install dmr-from-django-ninja@django-modern-rest
 
-2. Verify skills are available:
+2. Verify the plugin is installed and enabled:
 
 .. code-block:: text
 
-   /skills list
+   /plugin
 
 3. Invoke the skill:
 
 .. code-block:: text
 
-   /skills dmr-from-django-ninja
+   /dmr-from-django-ninja
 
 4. Then describe migration scope and constraints in a normal prompt.
+
+See :doc:`agent-skills` for other agents.
 
 
 What is migrated

@@ -1,11 +1,14 @@
 import abc
-from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeAlias
+import dataclasses
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Final, TypeAlias, final
 
 from django.http import HttpRequest
 from django.utils.translation import gettext_lazy as _
 
 from dmr.errors import ErrorDetail
 from dmr.exceptions import DataRenderingError, RequestSerializationError
+from dmr.internal.types import EMPTY
 from dmr.parsers import Parser, Raw
 from dmr.renderers import Renderer
 
@@ -22,12 +25,84 @@ SchemaDef: TypeAlias = tuple[
 ]
 
 
+@final
+@dataclasses.dataclass(frozen=True, slots=True)
+class ContextField:
+    """
+    Single field of a context model to be built by a serializer.
+
+    .. versionadded:: 0.16.0
+    """
+
+    annotation: Any
+    """Type annotation to parse the field into."""
+
+    default: Any = EMPTY
+    """
+    Default value of the field, used when the field is missing.
+
+    :data:`~dmr.types.EMPTY` means that the field is required.
+    It is always the exact object that the endpoint has as its default,
+    we never copy it or wrap it into any factories.
+    """
+
+
+def context_field_tuples(
+    fields: Mapping[str, ContextField],
+) -> list[tuple[Any, ...]]:
+    """
+    Convert context fields into tuples that model constructors accept.
+
+    Both :func:`dataclasses.make_dataclass` and :func:`msgspec.defstruct`
+    accept ``(name, type)`` tuples for required fields
+    and ``(name, type, default)`` tuples for fields with defaults.
+    Fields with defaults always go after the fields without them,
+    just like in regular function signatures.
+
+    .. versionadded:: 0.16.0
+    """
+    required = [
+        (field_name, field.annotation)
+        for field_name, field in fields.items()
+        if field.default is EMPTY
+    ]
+    with_defaults = [
+        (field_name, field.annotation, field.default)
+        for field_name, field in fields.items()
+        if field.default is not EMPTY
+    ]
+    return [*required, *with_defaults]
+
+
+@final
+@dataclasses.dataclass(frozen=True, slots=True)
+class ContextModel:
+    """
+    Model that a serializer has built to parse the whole request context.
+
+    .. versionadded:: 0.16.0
+    """
+
+    model: Any
+    """Any type that :meth:`BaseSerializer.from_python` can parse into."""
+
+    to_kwargs: Callable[[Any], dict[str, Any]] | None = None
+    """
+    Converts a parsed model instance into a mapping of field names to values.
+
+    ``None`` means that :meth:`BaseSerializer.from_python` already returns
+    a mapping for this model, so no conversion is needed.
+    """
+
+
 class BaseEndpointOptimizer:
     """
     Plugins might often need to run some specific preparations for endpoints.
 
     To achieve that we provide an explicit API for that.
     """
+
+    __slots__ = ()
 
     @classmethod
     @abc.abstractmethod
@@ -44,6 +119,8 @@ class BaseEndpointOptimizer:
 
 class BaseSchemaGenerator:
     """Generates JSON schema by the native serializer API."""
+
+    __slots__ = ()
 
     @classmethod
     @abc.abstractmethod
@@ -181,6 +258,7 @@ class BaseSerializer:  # noqa: WPS214
         model: Any,
         *,
         strict: bool | None,
+        extra_namespace: Mapping[str, Any] | None = None,
     ) -> Any:
         """
         Parse *unstructured* data from python primitives into *model*.
@@ -196,9 +274,48 @@ class BaseSerializer:  # noqa: WPS214
                 For example, it is fine for a request validation
                 to be less strict in some cases and allow type coercition.
                 But, response types need to be strongly validated.
+            extra_namespace: Optional namespace to load type annotations from.
+                It is useful, when using stringified or lazy type annotations.
 
         Returns:
             Structured and validated data.
+
+        .. versionchanged:: 0.13.0
+            Added *extra_namespace* parameter.
+
+        """
+        raise NotImplementedError
+
+    @classmethod
+    @abc.abstractmethod
+    def build_context_model(
+        cls,
+        name: str,
+        fields: Mapping[str, ContextField],
+    ) -> ContextModel:
+        """
+        Build the best model to parse the whole request context at once.
+
+        All components of an endpoint are parsed in a single
+        :meth:`from_python` call. This method builds the model for that call.
+        Each serializer picks the fastest model type it can validate:
+        it can be a :class:`typing.TypedDict`, a dataclass,
+        a :class:`msgspec.Struct`, or anything else.
+
+        Fields with defaults must not be required by the model.
+        Default values must be used as-is, without any copies
+        or default factories, because they are the real python defaults
+        of the endpoint function. Use :func:`context_field_tuples`
+        to get them in the form that most model constructors accept.
+
+        Args:
+            name: Name of the model to build. Not really important.
+            fields: Mapping of field names to their annotations and defaults.
+
+        Returns:
+            Model and the way to convert its instances into keyword arguments.
+
+        .. versionadded:: 0.16.0
 
         """
         raise NotImplementedError

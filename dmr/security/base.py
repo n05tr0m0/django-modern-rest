@@ -1,23 +1,122 @@
 import dataclasses
 from abc import abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Literal, Self, final, overload
+from types import MappingProxyType
+from typing import (
+    TYPE_CHECKING,
+    Final,
+    Generic,
+    Literal,
+    Self,
+    TypeVar,
+    final,
+    overload,
+)
 
 from django.http import HttpRequest
 from typing_extensions import override
 
 from dmr.exceptions import NotAuthenticatedError
+from dmr.headers import HeaderSpec, NewHeader
 from dmr.metadata import EndpointMetadata, ResponseSpec, ResponseSpecProvider
-from dmr.openapi.objects import Reference, SecurityRequirement, SecurityScheme
+from dmr.semantic_schema import AuthProvider
 
 if TYPE_CHECKING:
     from dmr.controller import Controller
     from dmr.endpoint import Endpoint
     from dmr.serializer import BaseSerializer
 
+#: Name of the header that carries auth challenges in `401` responses:
+_WWW_AUTHENTICATE: Final = 'WWW-Authenticate'
 
-class _BaseAuth(ResponseSpecProvider):
+#: Header spec for the `_WWW_AUTHENTICATE` header:
+_WWW_AUTHENTICATE_SPEC: Final = HeaderSpec(
+    description=(
+        'Challenges that the client can use to authenticate this request'
+    ),
+    # A `401` can also be raised by hand from an endpoint body,
+    # and then we have no auth instance to build a challenge from.
+    # So, we document the header, but never enforce it in runtime.
+    skip_validation=True,
+)
+
+#: Headers that every view issuing or accepting credentials must return.
+#: Responses of such views must never be written to any cache,
+#: neither shared, nor local.
+NO_STORE_HEADERS: Final = MappingProxyType({
+    'Cache-Control': NewHeader(
+        value='no-store',
+        description='Credentials must not be stored in any cache.',
+    ),
+})
+
+
+def unauth_response_spec(
+    controller_cls: type['Controller[BaseSerializer]'],
+    metadata: EndpointMetadata | None = None,
+) -> ResponseSpec:
+    """
+    Defines the default unauthed response spec.
+
+    When *metadata* is passed and its auth chain can produce
+    a ``WWW-Authenticate`` challenge, we also document that header.
+    """
+    has_challenge = (
+        metadata is not None
+        and _combined_www_authenticate(metadata.auth) is not None
+    )
+    return ResponseSpec(
+        controller_cls.error_model,
+        status_code=NotAuthenticatedError.status_code,
+        description='Raised when auth was not successful',
+        headers=(
+            {_WWW_AUTHENTICATE: _WWW_AUTHENTICATE_SPEC}
+            if has_challenge
+            else None
+        ),
+    )
+
+
+def add_www_authenticate(
+    exc: NotAuthenticatedError,
+    auth: Sequence['SyncAuth | AsyncAuth'] | None,
+) -> None:
+    """
+    Advertise *auth* in ``WWW-Authenticate`` on the ``401`` that *exc* returns.
+
+    :rfc:`9110#section-15.5.2` requires every ``401`` to carry at least one
+    challenge. Headers that *exc* already has always win, so an auth class
+    can raise with a challenge of its own.
+    """
+    if exc.headers is not None:
+        return
+    challenge = _combined_www_authenticate(auth)
+    if challenge is not None:
+        exc.headers = {_WWW_AUTHENTICATE: challenge}
+
+
+def _combined_www_authenticate(
+    auth: Sequence['SyncAuth | AsyncAuth'] | None,
+) -> str | None:
+    """
+    Join ``WWW-Authenticate`` challenges of *auth* into a single header value.
+
+    :rfc:`9110#section-11.6.1` allows a challenge list,
+    so an endpoint with several auth instances advertises all of them at once.
+    Returns ``None`` when no auth in the chain has a challenge to send.
+    """
+    if not auth:
+        return None
+    all_challenges = [single.www_authenticate_challenge for single in auth]
+    # `dict.fromkeys` removes duplicates, but keeps the original order:
+    challenges = dict.fromkeys(
+        challenge for challenge in all_challenges if challenge
+    )
+    return ', '.join(challenges) or None
+
+
+class _BaseAuth(ResponseSpecProvider, AuthProvider):
     """
     Base class for all auth instances.
 
@@ -34,15 +133,32 @@ class _BaseAuth(ResponseSpecProvider):
 
     @property
     @abstractmethod
-    def security_schemes(self) -> dict[str, SecurityScheme | Reference]:
-        """Provides a security schema definition."""
+    def www_authenticate_challenge(self) -> str | None:
+        """
+        Challenge to advertise in ``WWW-Authenticate`` on ``401`` responses.
+
+        :rfc:`9110#section-15.5.2` requires every ``401`` to carry at least
+        one challenge, but a challenge can only name an HTTP authentication
+        scheme that the client sends in the ``Authorization`` header.
+
+        Return ``None`` when there is nothing to advertise: auth that reads
+        credentials from a cookie or from a header of its own cannot
+        express itself as a challenge.
+
+        .. versionadded:: 0.15.0
+        """
         raise NotImplementedError
 
-    @property
-    @abstractmethod
-    def security_requirement(self) -> SecurityRequirement:
-        """Provides a security schema usage requirement."""
-        raise NotImplementedError
+    def validate(
+        self,
+        controller_cls: type['Controller[BaseSerializer]'],
+        metadata: EndpointMetadata,
+    ) -> None:
+        """
+        Validate auth configuration at import time.
+
+        .. versionadded:: 0.16.0
+        """
 
     @override
     def provide_response_specs(
@@ -53,11 +169,7 @@ class _BaseAuth(ResponseSpecProvider):
     ) -> list[ResponseSpec]:
         """Provides responses that can happen when user is not authed."""
         return self._add_new_response(
-            ResponseSpec(
-                controller_cls.error_model,
-                status_code=NotAuthenticatedError.status_code,
-                description='Raised when auth was not successful',
-            ),
+            unauth_response_spec(controller_cls, metadata),
             existing_responses,
         )
 
@@ -122,9 +234,13 @@ class AsyncAuth(_BaseAuth):
         """
 
 
+_SyncAuthT = TypeVar('_SyncAuthT', bound='SyncAuth')
+_AsyncAuthT = TypeVar('_AsyncAuthT', bound='AsyncAuth')
+
+
 @final
 @dataclasses.dataclass(slots=True, frozen=True)
-class SyncOrAsyncAuth:
+class SyncOrAsyncAuth(Generic[_SyncAuthT, _AsyncAuthT]):
     """
     Auth that selects between a sync and async instance.
 
@@ -132,19 +248,38 @@ class SyncOrAsyncAuth:
     sync and async endpoints. Not allowed on controller or endpoint level.
 
     .. versionadded:: 0.11.0
+    .. versionchanged:: 0.16.0
+        Now it is generic.
+
     """
 
-    _sync_auth: SyncAuth
-    _async_auth: AsyncAuth
+    _sync_auth: _SyncAuthT
+    _async_auth: _AsyncAuthT
+
+    @overload
+    def resolve(self, *, is_async: Literal[True]) -> _AsyncAuthT: ...
+
+    @overload
+    def resolve(self, *, is_async: Literal[False]) -> _SyncAuthT: ...
+
+    @overload
+    def resolve(self, *, is_async: bool) -> _AsyncAuthT | _SyncAuthT: ...
 
     def resolve(
         self,
-        auth_cls: type[SyncAuth] | type[AsyncAuth],
-    ) -> SyncAuth | AsyncAuth:
-        """Return the auth instance matching *auth_cls*."""
-        if issubclass(auth_cls, SyncAuth):
-            return self._sync_auth
-        return self._async_auth
+        *,
+        is_async: bool,
+    ) -> _AsyncAuthT | _SyncAuthT:
+        """
+        Return the auth instance matching *is_async* requirement.
+
+        .. versionchanged:: 0.16.0
+            Replaced *auth_cls* parameter with simpler *is_async*.
+
+        """
+        if is_async:
+            return self._async_auth
+        return self._sync_auth
 
 
 @overload

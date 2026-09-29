@@ -36,7 +36,7 @@ Extras for different serializers:
 - ``'django-modern-rest[pydantic]'`` for ``pydantic`` support
 - ``'django-modern-rest[attrs]'`` for ``attrs`` support
 - ``'django-modern-rest[msgspec]'`` for ``msgspec`` support
-  and the fastest ``json`` parsing
+  and the fastest ``json`` parsing in requests, ``jwt``, testing, and OpenAPI
 
 Extras for different features:
 
@@ -44,56 +44,66 @@ Extras for different features:
   `jwt <https://pyjwt.readthedocs.io>`_ support
 - ``'django-modern-rest[openapi]'`` for
   `OpenAPI schema validation <https://github.com/python-openapi/openapi-spec-validator>`_
-  and better examples generation
+  and better example generation
 
 
 .. important::
 
-  We highly recommend to always install
+  We highly recommend always installing
   `msgspec <https://github.com/jcrist/msgspec>`_, even when using just
-  `pydantic <https://github.com/pydantic/pydantic>`_ for APIs,
-  because we use ``msgspec`` to parse ``json``, when it is available,
-  since it is `the fastest <https://msgspec.dev/benchmarks>`_
+  `pydantic <https://github.com/pydantic/pydantic>`_ for APIs.
+  We use ``msgspec`` to parse ``json`` when it is available
+  because it is `the fastest <https://msgspec.dev/benchmarks>`_
   library out there for this task.
 
-  We also recommend to always install
-  `django-stubs <https://github.com/typeddjango/django-stubs>`_
-  for typing the Django itself.
+  We also recommend always installing `django-stubs`_
+  for typing Django itself.
 
 .. note::
 
-  You don't need to add ``'dmr'`` to the ``INSTALLED_APPS``,
-  unless you want to serve static files for the OpenAPI.
+  You don't need to add ``'dmr'`` to ``INSTALLED_APPS``
+  unless you want to serve static files for OpenAPI.
 
 
 LLMs support
 ------------
 
 Are you using AI for assisted coding?
-We got you covered, use these files for context to make sure that the LLM
+We've got you covered. Use these files for context to make sure that the LLM
 knows our framework:
 
 - https://django-modern-rest.readthedocs.io/llms.txt
   for indexes with links to different pages and topics
 - https://django-modern-rest.readthedocs.io/llms-full.txt
   for complete docs
+- Every documentation page is also served as Markdown,
+  replace ``.html`` with ``.md`` in its URL,
+  or press ``M↓`` next to the title of any page
 
 We also support
 `Context7 <https://context7.com/wemake-services/django-modern-rest>`_
-for up-to-date docs for the LLMs.
+for up-to-date docs for LLMs.
 
 Use cases we officially support:
 
 - Learning ``django-modern-rest`` with the help
   of `DeepWiki <https://deepwiki.com/wemake-services/django-modern-rest>`_
 - AI-guided migrations for any API changes.
-  We break something? We provide a prompt for you, so you can automatically
-  upgrade to a newer version using an AI tool of your choice
+  Did we break something? Every breaking release ships a migration prompt,
+  so you can upgrade to a newer version
+  using an AI tool of your choice
 
-We support several custom agent skills:
+We ship several :doc:`agent skills <ai/agent-skills>` inside the package,
+install them into your project with a single command:
+
+.. code-block:: bash
+
+  uvx library-skills
 
 - ``$dmr`` to enforce ``django-modern-rest`` best practices
   with fast and secure approaches
+- ``$dmr-upgrade`` to :doc:`upgrade to a newer release <ai/dmr-upgrade>`
+  with the official migration prompts
 - ``$dmr-openapi-skeleton`` to generate
   a :doc:`working project boilerplate <ai/spec-first>`
   from a single ``openapi.json`` file (the "Spec First" approach)
@@ -101,6 +111,8 @@ We support several custom agent skills:
   :doc:`migrating from Django Ninja <ai/dmr-from-ninja>`
 - ``$dmr-from-drf`` to help with
   :doc:`migrating from Django REST Framework <ai/dmr-from-drf>`
+- ``$dmr-from-dj-rest-auth`` to help with
+  :doc:`migrating from dj-rest-auth <ai/dmr-from-dj-rest-auth>`
 
 
 Showcase
@@ -123,13 +135,16 @@ Let's see the basics and learn how to use ``dmr`` in a single example:
   .. tab:: pydantic
 
     We support :class:`pydantic.BaseModel`
-    via :class:`~dmr.plugins.pydantic.PydanticSerializer`.
+    via :class:`~dmr.plugins.pydantic.PydanticSerializer`
+    and :class:`~dmr.plugins.pydantic.PydanticFastSerializer`.
 
     .. tip::
 
-      If you only use ``json`` :doc:`parsers and renderers <negotiation>`,
-      it would be faster to use
-      :class:`~dmr.plugins.pydantic.PydanticFastSerializer` instead.
+      :class:`~dmr.plugins.pydantic.PydanticFastSerializer` is faster,
+      but it only works with ``json``
+      :doc:`parsers and renderers <negotiation>`.
+      If you need other formats, use
+      :class:`~dmr.plugins.pydantic.PydanticSerializer` instead.
 
     .. literalinclude:: /examples/getting_started/pydantic_controller.py
       :caption: views.py
@@ -183,28 +198,27 @@ Let's see the basics and learn how to use ``dmr`` in a single example:
 .. important::
 
   You can choose a serializer per controller, which will give you
-  the freedom to choose the best serializer and model for the job.
+  the freedom to pick the best serializer and model for the job.
   ``msgspec`` gives you more speed,
   while ``pydantic`` gives you more flexibility.
 
 
 In this example:
 
-1. We defined regular ``pydantic``, ``msgspec``, or whatever models
-   that we will use for our API
-2. We added two component parsers: one for request's
-   :data:`~dmr.components.Body` and one
-   for :data:`~dmr.components.Headers`
-   which will parse them into the typed models
-   that we pass to these components as type parameters
-3. Next we created
+1. We defined regular ``pydantic``, ``msgspec``, or any other models
+   we will use for our API
+2. We added a component parser for the request's
+   :data:`~dmr.components.Body`,
+   which will parse it into the typed model
+   that we pass to this component as a type parameter
+3. Next, we created
    a :class:`~dmr.controller.Controller` class
    with :class:`~dmr.plugins.pydantic.PydanticSerializer`
    or :class:`~dmr.plugins.msgspec.MsgspecSerializer`
    to serialize input and output data for us
-4. We also defined ``post`` API endpoint and returned
-   a simple model response from it, it will be automatically
-   transformed into :class:`django.http.HttpResponse` instance
+4. We also defined a ``post`` API endpoint and returned
+   a simple model response from it. It will be automatically
+   transformed into a :class:`django.http.HttpResponse` instance
    by ``django-modern-rest``
 
 Now, let's add our controller to the list of URLs:
@@ -217,7 +231,7 @@ Now, let's add our controller to the list of URLs:
 Your first ``django-modern-rest`` API is ready.
 Next, you can learn:
 
-- How to generate OpenAPI schema
+- How to generate an OpenAPI schema
 - How to handle errors
 - How to customize controllers and endpoints
 
@@ -229,42 +243,42 @@ If you were ever told that Django is too big and complicated,
 that was misleading, to say the least.
 
 Here's a :doc:`single-file application <structure/micro-framework>`
-that looks pretty much the same as any other micro-framework, like:
+that looks pretty much the same as any other micro-framework, like
 FastAPI, Litestar, or Flask.
 
 .. literalinclude:: /examples/structure/micro_framework/single_file_asgi.py
    :language: python
    :linenos:
 
-You can copy it by clicking "Copy" in the right upper corner of the example,
-it shows up on hovering the code example. Paste it as ``example.py``,
-install the ``django-modern-rest`` and run it with:
+You can copy it by clicking "Copy" in the upper-right corner of the example.
+The copy button appears when you hover over the code example. Paste it as ``example.py``,
+install ``django-modern-rest``, and run it with:
 
 .. tabs::
 
-    .. tab:: :iconify:`material-icon-theme:uv` uv
+  .. tab:: :iconify:`material-icon-theme:uv` uv
 
-        .. code-block:: bash
+    .. code-block:: bash
 
-            uv run example.py runserver
+      uv run python example.py runserver
 
-    .. tab:: :iconify:`devicon:poetry` poetry
+  .. tab:: :iconify:`devicon:poetry` poetry
 
-        .. code-block:: bash
+    .. code-block:: bash
 
-            poetry run python example.py runserver
+      poetry run python example.py runserver
 
-    .. tab:: :iconify:`devicon:pypi` pip
+  .. tab:: :iconify:`devicon:pypi` pip
 
-        .. code-block:: bash
+    .. code-block:: bash
 
-            python example.py runserver
+      python example.py runserver
 
 Your API is now live:
 
 - ``POST`` http://localhost:8000/api/user/ — create a user
 
-And then visit https://localhost:8000/docs/swagger/ for the interactive docs.
+Then visit http://localhost:8000/docs/swagger/ for the interactive docs.
 
 .. image:: /_static/images/swagger.png
    :alt: Swagger view
@@ -273,36 +287,54 @@ And then visit https://localhost:8000/docs/swagger/ for the interactive docs.
 That's it, enjoy your new project!
 
 
-But, this is too simple for my use-case!
-----------------------------------------
+But this is too simple for my use case!
+---------------------------------------
 
 What is great about Django is that it scales.
-You can start with a single file app and scale it up to a full
-featured monolith with strict context boundaries, DDD, reusable apps, etc.
+You can start with a single-file app and scale it up to a full-featured
+monolith with strict context boundaries, DDD, reusable apps, etc.
 
 We recommend starting new big projects with
-https://github.com/wemake-services/wemake-django-template
+https://github.com/wemake-services/wemake-django-template.
 
-It is strict, security-first, battle-proven, highload-tested boilerplate
-for real apps of the modern age.
+It is a strict, security-first, battle-proven, highload-tested
+boilerplate for real apps of the modern age.
+
+
+Type checking
+-------------
+
+``django-modern-rest`` officially supports all major Python type checkers
+in strict mode (listed in order of recommendation):
+
+- `mypy <https://github.com/python/mypy>`_, which has the best support
+  due to the `django-stubs`_ plugin
+- `pyrefly <https://github.com/facebook/pyrefly>`_
+- `pyright <https://github.com/microsoft/pyright>`_
+- `ty <https://github.com/astral-sh/ty>`_
+
+Installing `django-stubs`_ is required for all of them.
 
 
 Next up
 -------
 
 .. grid:: 1 1 2 2
-    :class-row: surface
-    :padding: 0
-    :gutter: 2
+  :class-row: surface
+  :padding: 0
+  :gutter: 2
 
-    .. grid-item-card:: :octicon:`rocket` Core Concepts
-      :link: core-concepts
-      :link-type: doc
+  .. grid-item-card:: :octicon:`rocket` Core Concepts
+    :link: core-concepts
+    :link-type: doc
 
-      Learn the fundamentals.
+    Learn the fundamentals.
 
-    .. grid-item-card:: :octicon:`gear` Configuration
-      :link: configuration
-      :link-type: doc
+  .. grid-item-card:: :octicon:`gear` Configuration
+    :link: configuration
+    :link-type: doc
 
-      Learn how to configure ``django-modern-rest``.
+    Learn how to configure ``django-modern-rest``.
+
+
+.. _django-stubs: https://github.com/typeddjango/django-stubs

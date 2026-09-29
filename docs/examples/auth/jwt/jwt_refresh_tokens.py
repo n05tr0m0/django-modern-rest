@@ -2,7 +2,7 @@ import datetime as dt
 
 from typing_extensions import override
 
-from dmr.plugins.pydantic import PydanticSerializer
+from dmr.plugins.pydantic import PydanticFastSerializer
 from dmr.security.jwt.views import (
     ObtainTokensResponse,
     RefreshTokenPayload,
@@ -13,7 +13,7 @@ from dmr.security.jwt.views import (
 # You can also use `RefreshTokenAsyncController` if needed:
 class RefreshSyncController(
     RefreshTokenSyncController[
-        PydanticSerializer,
+        PydanticFastSerializer,
         RefreshTokenPayload,
         ObtainTokensResponse,
     ],
@@ -37,4 +37,5 @@ class RefreshSyncController(
         }
 
 
+# run: {"controller": "RefreshSyncController", "method": "post", "url": "/api/auth/refresh/", "body": {"refresh_token": "$JWT_REFRESH_TOKEN"}, "populate_db": true}  # noqa: ERA001, E501
 # openapi: {"controller": "RefreshSyncController", "openapi_url": "/docs/openapi.json/"}  # noqa: ERA001, E501

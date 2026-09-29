@@ -10,6 +10,5 @@ router = Router(
             name='user',
         ),
     ],
+    tags=['etag'],
 )
-
-urlpatterns = router.urls

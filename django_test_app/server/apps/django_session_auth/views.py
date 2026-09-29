@@ -1,5 +1,6 @@
 from typing import Final, final
 
+from django.views.decorators.debug import sensitive_variables
 from typing_extensions import override
 
 from dmr import Controller
@@ -14,6 +15,7 @@ from dmr.security.django_session.views import (
     DjangoSessionResponse,
     DjangoSessionSyncController,
 )
+from server.common.assertions import check_sensitive_parameters
 
 _USER_ID: Final = 'user_id'
 
@@ -31,6 +33,7 @@ class SessionSyncController(
         self,
         payload: DjangoSessionPayload,
     ) -> DjangoSessionPayload:
+        check_sensitive_parameters(self.request)
         return payload
 
     @override
@@ -47,10 +50,12 @@ class SessionAsyncController(
     ],
 ):
     @override
+    @sensitive_variables()
     async def convert_auth_payload(
         self,
         payload: DjangoSessionPayload,
     ) -> DjangoSessionPayload:
+        check_sensitive_parameters(self.request)
         return payload
 
     @override

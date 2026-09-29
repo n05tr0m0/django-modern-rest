@@ -1,8 +1,8 @@
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, TypeAlias, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, TypeVar
 
 from django.http import HttpRequest, HttpResponse
 
@@ -19,19 +19,22 @@ _ConverterSpec: TypeAlias = tuple[
     dict[HTTPStatus, 'ResponseSpec'],
     ResponseConverter,
 ]
-_ViewDecorator: TypeAlias = Callable[[_CallableAny], _CallableAny]
+
+
+class _ClassDecorator(Protocol):
+    def __call__(self, klass: _TypeT, /) -> _TypeT: ...
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class DecoratorWithResponses:
     """Type for decorator with responses attribute."""
 
-    decorator: Callable[[_TypeT], _TypeT]  # pyright: ignore[reportGeneralTypeIssues]
+    decorator: _ClassDecorator
     responses: list['ResponseSpec']
 
     def __call__(self, klass: _TypeT) -> _TypeT:
         """Apply the decorator to the class."""
-        return self.decorator(klass)  # pyright: ignore[reportReturnType]  # pyrefly: ignore[bad-argument-type, bad-return]
+        return self.decorator(klass)
 
 
 def apply_converter(
@@ -97,9 +100,7 @@ def create_async_dispatch(
         ) -> HttpResponse:
             return original_dispatch(self, req, *view_args, **view_kwargs)  # type: ignore[no-any-return]
 
-        response: HttpResponse | Awaitable[HttpResponse] = middleware(
-            view_callable,
-        )(request, *args, **kwargs)
+        response = middleware(view_callable)(request, *args, **kwargs)
         # Django middleware can be either sync or async. When we wrap an async
         # view with middleware, the middleware itself might be sync
         # (returning HttpResponse) or async (returning Awaitable[HttpResponse]).

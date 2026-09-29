@@ -36,15 +36,10 @@ if view_only == 0 then
     end
 else
     -- When reading the key, we don't have to do anything special.
-    current = tonumber(redis.call("GET", key))
+    current = tonumber(redis.call("GET", key)) or 0
 end
 
 local ttl = redis.call("TTL", key)
--- Use Redis server clock so the timestamp is always consistent
--- with the data stored in Redis (no Python <-> Redis skew).
-local time_reply = redis.call("TIME")        -- {seconds, microseconds}
-local now        = tonumber(time_reply[1])   -- integer seconds
-local expire_at  = now + ttl
 
 if current > max_requests then
     if view_only == 0 then
@@ -52,10 +47,10 @@ if current > max_requests then
         -- making the "current" value honest for the caller.
         redis.call("DECR", key)
     end
-    return {0, max_requests, expire_at}
+    return {0, max_requests, ttl}
 end
 
-return {1, current, expire_at}
+return {1, current, ttl}
 """
 
 # Leaky bucket

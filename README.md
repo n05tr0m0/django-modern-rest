@@ -22,25 +22,24 @@
 [![Supported Python Version](https://img.shields.io/pypi/pyversions/django-modern-rest.svg)](https://pypi.org/project/django-modern-rest/)
 [![Code Style](https://img.shields.io/badge/style-wemake-000000.svg)](https://github.com/wemake-services/wemake-python-styleguide)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wemake-services/django-modern-rest)
-[![Telegram Chat](https://img.shields.io/badge/chat-join-blue.svg?logo=telegram)](https://t.me/django_modern_rest)
+[![Telegram group](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Ftg.chirizxc.workers.dev%2Fdjango_modern_rest&query=%24.members_summary_pretty&label=t.me%2Fdjango_modern_rest&color=272170&gradient=9D50BB%2C+6E48AA&valueColor=ffffff&labelTextColor=ffffff&logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZD0iTTEyIDI0YzYuNjI3IDAgMTItNS4zNzMgMTItMTJTMTguNjI3IDAgMTIgMCAwIDUuMzczIDAgMTJzNS4zNzMgMTIgMTIgMTJaIiBmaWxsPSJ1cmwoI2EpIi8%2BPHBhdGggZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik01LjQyNSAxMS44NzFhNzk2LjQxNCA3OTYuNDE0IDAgMCAxIDYuOTk0LTMuMDE4YzMuMzI4LTEuMzg4IDQuMDI3LTEuNjI4IDQuNDc3LTEuNjM4LjEgMCAuMzIuMDIuNDcuMTQuMTIuMS4xNS4yMy4xNy4zMy4wMi4xLjA0LjMxLjAyLjQ3LS4xOCAxLjg5OC0uOTYgNi41MDQtMS4zNiA4LjYyMi0uMTcuOS0uNSAxLjE5OS0uODE5IDEuMjI5LS43LjA2LTEuMjI5LS40Ni0xLjg5OC0uOS0xLjA2LS42ODktMS42NDktMS4xMTktMi42NzgtMS43OTgtMS4xOS0uNzgtLjQyLTEuMjA5LjI2LTEuOTA4LjE4LS4xOCAzLjI0Ny0yLjk3OCAzLjMwNy0zLjIyOC4wMS0uMDMuMDEtLjE1LS4wNi0uMjEtLjA3LS4wNi0uMTctLjA0LS4yNS0uMDItLjExLjAyLTEuNzg4IDEuMTQtNS4wNTYgMy4zNDgtLjQ4LjMzLS45MDkuNDktMS4yOTkuNDgtLjQzLS4wMS0xLjI0OC0uMjQtMS44NjgtLjQ0LS43NS0uMjQtMS4zNDktLjM3LTEuMjk5LS43OS4wMy0uMjIuMzMtLjQ0Ljg5LS42NjlaIiBmaWxsPSIjZmZmIi8%2BPGRlZnM%2BPGxpbmVhckdyYWRpZW50IGlkPSJhIiB4MT0iMTEuOTkiIHkxPSIwIiB4Mj0iMTEuOTkiIHkyPSIyMy44MSIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPjxzdG9wIHN0b3AtY29sb3I9IiMyQUFCRUUiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMyMjlFRDkiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48L3N2Zz4K)](https://t.me/django_modern_rest)
 </div>
 
 ## Features
 
 - [x] [Blazingly fast](https://django-modern-rest.readthedocs.io/en/latest/pages/deep-dive/performance.html)
-- [x] Supports `django>=5.0`
+- [x] Supports async Django without any `sync_to_async` / `async_to_sync` calls inside, tested to work with free-threading builds
 - [x] Supports `pydantic2`, `msgspec`, `attrs`, `dataclasses`, `TypedDict` as model schemas, but not bound to any of these libraries
-- [x] Supports async Django without any `sync_to_async` calls inside, tested to work with free-threading builds
-- [x] Fully typed and checked with `mypy`, `pyright`, and `pyrefly` in strict modes
+- [x] Fully typed and checked with `mypy`, `pyright`, `ty`, and `pyrefly` in strict modes
 - [x] Supports content negotiation, has default implementations for `json`, `msgpack`, SSE, Json Lines, and more
 - [x] Strict schema validation of both requests and responses, including errors
 - [x] Supports OpenAPI 3.1 / 3.2 semantic schema generation out of the box
 - [x] Supports all your existing `django` primitives and packages, no custom runtimes
-- [x] Great testing tools with [schemathesis](https://github.com/schemathesis/schemathesis), [polyfactory](https://github.com/litestar-org/polyfactory), [tracecov](https://django-modern-rest.readthedocs.io/en/latest/pages/testing.html#api-coverage-with-tracecov), bundled `pytest` plugin, and default Django's testing primitives
-- [x] 100% test coverage with 2000+ of carefully designed unit, integration, and property-based tests
+- [x] Great testing tools with [schemathesis](https://github.com/schemathesis/schemathesis), [polyfactory](https://github.com/litestar-org/polyfactory), [tracecov](https://django-modern-rest.readthedocs.io/en/latest/pages/testing/tracecov.html), bundled `pytest` plugin, and default Django's testing primitives
+- [x] 100% test coverage with 4000+ of carefully designed unit, integration, typing, and property-based tests on different databases and caches
 - [x] High [security standards](https://github.com/wemake-services/django-modern-rest/blob/master/.github/SECURITY.md)
 - [x] Built [by the community](https://github.com/wemake-services/django-modern-rest/graphs/contributors) for the community, not a single-person project
-- [x] Great docs
+- [x] Great [docs](https://django-modern-rest.readthedocs.io/en/latest/)
 - [x] No AI slop, but [built for the LLM era](https://django-modern-rest.readthedocs.io/en/latest/pages/getting-started.html#llms-support)
 - [x] No emojis 🌚️️
 
@@ -78,17 +77,17 @@
 
 Works for:
 - CPython 3.11+ or PyPy 3.11+
-- Django 5.0+
+- Django 5.0, 5.1, 5.2, 6.0, 6.1
 
 ```bash
 pip install django-modern-rest
 ```
 
 There are several included extras:
-- `'django-modern-rest[msgspec]'` provides `msgspec` support
+- `'django-modern-rest[msgspec]'` provides [`msgspec`](https://github.com/msgspec/msgspec) support
   and the fastest json parsing, recommended to be **always** included
-- `'django-modern-rest[pydantic]'` provides `pydantic` support
-- `'django-modern-rest[attrs]'` provides `attrs` support
+- `'django-modern-rest[pydantic]'` provides [`pydantic`](https://github.com/pydantic/pydantic) support
+- `'django-modern-rest[attrs]'` provides [`attrs`](https://github.com/python-attrs/attrs) support
 - `'django-modern-rest[jwt]'` provides [`pyjwt`](https://github.com/jpadilla/pyjwt) auth support
 - `'django-modern-rest[openapi]'` provides `OpenAPI` [schema validation](https://github.com/python-openapi/openapi-spec-validator),
   `yaml` OpenAPI view,
@@ -134,7 +133,7 @@ The shortest example [(click here to copy the whole file)](https://github.com/we
 And then route this controller in your `urls.py`:
 
 ```python
->>> from django.urls import include, path
+>>> from django.urls import path
 >>> from dmr.routing import Router
 
 >>> router = Router(
@@ -144,7 +143,7 @@ And then route this controller in your `urls.py`:
 ...     ],
 ... )
 >>> urlpatterns = [
-...     path(router.prefix, include((router.urls, 'my_app'), namespace='api')),
+...     router.to_urlpatterns(namespace='api'),
 ... ]
 
 ```
@@ -156,6 +155,11 @@ Next steps:
 - [The full documentation](https://django-modern-rest.readthedocs.io/en/latest/) has everything you need to get started!
 - [wemake-django-template](https://github.com/wemake-services/wemake-django-template) can be used to jump-start your new project with `django-modern-rest`!
 - [awesome-django-modern-rest](https://github.com/kondratevdev/awesome-django-modern-rest) - a curated list of resources related to `django-modern-rest`!
+
+
+## Contributors
+
+[![Contributors](https://contrib.rocks/image?repo=wemake-services/django-modern-rest)](https://github.com/wemake-services/django-modern-rest/graphs/contributors)
 
 
 ## License

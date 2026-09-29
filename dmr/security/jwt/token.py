@@ -29,17 +29,36 @@
 
 import datetime as dt
 from collections.abc import Sequence
-from dataclasses import InitVar, asdict, dataclass, field, fields
-from typing import Any, Self
+from dataclasses import asdict, dataclass, field, fields
+from typing import Any, Final, Self, final
 
 import jwt
+from django.views.decorators.debug import sensitive_variables
 from jwt.types import Options
 
-from dmr.exceptions import InternalServerError, NotAuthenticatedError
+from dmr.exceptions import NotAuthenticatedError
+from dmr.internal.jwt import dmr_jwt
+
+#: Name of the field that carries every non-registered claim.
+_EXTRAS_FIELD: Final = 'extras'
+
+
+@final
+class JWTokenError(Exception):
+    """
+    Raised when a token cannot be created, encoded, or decoded.
+
+    This is a semantic error about the token itself: its claims,
+    the signing algorithm, or the key. It is not an HTTP error,
+    because tokens are regularly created outside of any request:
+    in management commands, background tasks, and scripts.
+
+    .. versionadded:: 0.15.0
+    """
 
 
 @dataclass(frozen=True, slots=True)
-class JWToken:
+class JWToken:  # noqa: WPS214
     """
     JWT Token DTO.
 
@@ -52,6 +71,19 @@ class JWToken:
         aud: Audience - intended audience(s).
         jti: JWT ID - a unique identifier of the JWT between different issuers.
         extras: Extra fields that were found on the JWT token.
+            Only json-native values are guaranteed to be encoded
+            identically with and without ``msgspec`` installed.
+
+    .. versionchanged:: 0.15.0
+
+        Init-only ``leeway`` argument was removed.
+        Time-based claims are now validated in a single place
+        for each direction: :meth:`encode` checks that a token
+        can be issued, while :meth:`decode` fully relies
+        on ``pyjwt`` and its options.
+        Now we use ``msgspec`` for payload encoding and decoding,
+        when it is installed.
+        Dataclasses in ``extras`` field is no longer allowed.
 
     """
 
@@ -71,38 +103,36 @@ class JWToken:
         default_factory=dict,
     )
 
-    # Options for validation:
-    leeway: InitVar[int] = 0
-
-    def __post_init__(self, leeway: int) -> None:
-        """Runs extra validation."""
+    def __post_init__(self) -> None:
+        """Normalizes datetime claims and runs extra validation."""
         if len(self.sub) < 1:
             raise ValueError(
                 'sub must be a string with a length greater than 0',
             )
 
-        exp = _normalize_datetime(self.exp)
-        if (
-            exp + dt.timedelta(seconds=leeway)
-        ).timestamp() >= _normalize_datetime(
-            dt.datetime.now(dt.UTC),
-        ).timestamp():
-            object.__setattr__(self, 'exp', exp)
-        else:
-            raise ValueError(
-                'exp value must be a datetime in the future, '
-                f'leeway is {leeway}',
-            )
+        object.__setattr__(self, 'exp', _normalize_datetime(self.exp))
+        object.__setattr__(self, 'iat', _normalize_datetime(self.iat))
 
-        iat = _normalize_datetime(self.iat)
-        if (
-            iat.timestamp()
-            <= _normalize_datetime(dt.datetime.now(dt.UTC)).timestamp()
-        ):
-            object.__setattr__(self, 'iat', iat)
-        else:
-            raise ValueError('iat must be a current or past time')
+    def validate_issued_claims(self) -> None:
+        """
+        Ensure that this token makes sense to be issued right now.
 
+        Is called by :meth:`encode`, override it to change or to extend
+        the checks that we run before signing a token.
+
+        Raises:
+            JWTokenError: If this token cannot be issued right now.
+
+        .. versionadded:: 0.15.0
+
+        """
+        now = _normalize_datetime(dt.datetime.now(dt.UTC)).timestamp()
+        if self.exp.timestamp() < now:
+            raise JWTokenError('exp value must be a datetime in the future')
+        if self.iat.timestamp() > now:
+            raise JWTokenError('iat must be a current or past time')
+
+    @sensitive_variables()
     def encode(
         self,
         secret: str | bytes,
@@ -122,23 +152,37 @@ class JWToken:
             An encoded token string.
 
         Raises:
-            InternalServerError: If encoding fails.
+            JWTokenError: If the token cannot be issued right now
+                (`exp`/`iat` validation) or encoding fails. pyjwt errors
+                are wrapped and the original exception is preserved
+                as the cause.
+
+        .. versionchanged:: 0.15.0
+
+            ``exp`` and ``iat`` are validated here
+            via :meth:`validate_issued_claims`,
+            previously it was done during the instance creation.
+            Encoding failures now raise :class:`JWTokenError`
+            instead of the HTTP-layer ``InternalServerError``.
+
         """
+        self.validate_issued_claims()
         try:
-            return jwt.encode(
-                payload={
-                    field_name: field_value
-                    for field_name, field_value in asdict(self).items()
-                    if field_value is not None
-                },
+            return dmr_jwt.encode(
+                payload=self._build_payload(),
                 key=secret,
                 algorithm=algorithm,
                 headers=headers,
             )
-        except (jwt.exceptions.PyJWTError, NotImplementedError):
-            raise InternalServerError('Failed to encode token') from None
+        except (
+            jwt.exceptions.PyJWTError,
+            NotImplementedError,
+            TypeError,
+        ) as exc:
+            raise JWTokenError('Failed to encode token') from exc
 
     @classmethod
+    @sensitive_variables()
     def decode_payload(  # noqa: WPS211
         cls,
         encoded_token: str,
@@ -151,7 +195,7 @@ class JWToken:
         options: Options | None,
     ) -> dict[str, Any]:
         """Decode and verify the JWT and return its payload."""
-        return jwt.decode(
+        return dmr_jwt.decode(
             encoded_token,
             key=secret,
             algorithms=algorithms,
@@ -162,6 +206,7 @@ class JWToken:
         )
 
     @classmethod
+    @sensitive_variables()
     def decode(  # noqa: WPS211
         cls,
         encoded_token: str,
@@ -218,6 +263,14 @@ class JWToken:
         See also:
             https://pyjwt.readthedocs.io/en/stable/api.html#jwt.types.Options
 
+        .. versionchanged:: 0.15.0
+
+            Time-based claims are only validated by ``pyjwt``,
+            we don't validate them a second time anymore.
+            This means that ``leeway``, ``verify_exp``, and ``verify_iat``
+            are now respected, and that invalid tokens always
+            raise :exc:`dmr.exceptions.NotAuthenticatedError`.
+
         """
         options = cls._build_options(
             audience=accepted_audiences,
@@ -250,11 +303,42 @@ class JWToken:
         payload['iat'] = cls._decode_datetime_claim(payload, 'iat')
         cls._require_claim(payload, 'sub')
 
-        extra_fields = payload.keys() - {field.name for field in fields(cls)}
-        extras = payload.setdefault('extras', {})
+        extra_fields = payload.keys() - cls._known_field_names()
+        extras = payload.setdefault(_EXTRAS_FIELD, {})
         for key in extra_fields:
             extras[key] = payload.pop(key)
-        return cls(**payload, leeway=leeway)
+
+        try:
+            return cls(**payload)
+        except ValueError:
+            # Time-based claims are already checked by `pyjwt` above,
+            # everything else that is invalid here is still a bad token.
+            raise NotAuthenticatedError from None
+
+    @classmethod
+    def _known_field_names(cls) -> frozenset[str]:
+        if cls is JWToken:
+            return _JWTOKEN_FIELD_NAME_SET
+        # Subclasses can define extra fields, and those are real claims.
+        return frozenset(
+            field_definition.name for field_definition in fields(cls)
+        )
+
+    def _build_payload(self) -> dict[str, Any]:
+        if type(self) is JWToken:  # noqa: WPS516
+            payload: dict[str, Any] = {}
+            for field in _JWTOKEN_FIELD_NAMES:
+                field_value = getattr(self, field)
+                if field_value is not None:
+                    payload[field] = field_value
+            return payload
+        # Subclasses can define extra fields, and `asdict` is the only
+        # thing that sees them. They are rare, so they keep the old path.
+        return {
+            field_name: field_value
+            for field_name, field_value in asdict(self).items()
+            if field_value is not None
+        }
 
     @classmethod
     def _build_options(  # noqa: WPS211
@@ -316,6 +400,18 @@ class JWToken:
             )
         except (TypeError, ValueError, OSError):
             raise NotAuthenticatedError from None
+
+
+#: Field names of :class:`JWToken` in declaration order, they never change.
+#: The order is a part of our API: it defines the claim order in a token.
+_JWTOKEN_FIELD_NAMES: Final = tuple(
+    field_definition.name for field_definition in fields(JWToken)
+)
+
+#: Same names, but for the membership checks in :meth:`JWToken.decode`.
+_JWTOKEN_FIELD_NAME_SET: Final = frozenset(
+    field_definition.name for field_definition in fields(JWToken)
+)
 
 
 def _normalize_datetime(datetime: dt.datetime) -> dt.datetime:

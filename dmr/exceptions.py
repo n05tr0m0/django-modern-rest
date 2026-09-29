@@ -1,8 +1,9 @@
 from http import HTTPStatus
 from typing import TYPE_CHECKING, ClassVar, Final, final
 
-from django.utils.functional import Promise
 from django.utils.translation import gettext_lazy as _
+
+from dmr.internal.types import StrOrPromise
 
 if TYPE_CHECKING:
     from dmr.errors import ErrorDetail
@@ -43,10 +44,10 @@ class InternalServerError(Exception):
     Indicates that something is broken on our side.
 
     If ``settings.DEBUG`` is enabled, we share the details: what has happened.
-    If it disabled, we hust show a generic message.
+    If it is disabled, we just show a generic message.
     """
 
-    default_message: ClassVar[str | Promise] = _('Internal server error')
+    default_message: ClassVar[StrOrPromise] = _('Internal server error')
     status_code: ClassVar[HTTPStatus] = HTTPStatus.INTERNAL_SERVER_ERROR
 
 
@@ -106,15 +107,26 @@ class NotAcceptableError(Exception):
 class NotAuthenticatedError(Exception):
     """Raised when we fail to authenticate a user."""
 
-    default_message: ClassVar[str | Promise] = _NOT_AUTHENTICATED_MSG
+    default_message: ClassVar[StrOrPromise] = _NOT_AUTHENTICATED_MSG
     status_code: ClassVar[HTTPStatus] = HTTPStatus.UNAUTHORIZED
 
-    def __init__(self, msg: str | Promise | None = None) -> None:
-        """Provides default error message."""
+    def __init__(
+        self,
+        msg: StrOrPromise | None = None,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """
+        Provides default error message.
+
+        When *headers* is not passed, we fill it with
+        the ``WWW-Authenticate`` challenge of the endpoint's auth chain.
+        """
         # Circular import:
         from dmr.errors import ErrorType  # noqa: PLC0415
 
         super().__init__(msg or self.default_message)
+        self.headers = headers
         self.error_type = ErrorType.security
 
 
@@ -122,12 +134,12 @@ class NotAuthenticatedError(Exception):
 class TooManyRequestsError(Exception):
     """Raised when user fails the throttling check."""
 
-    default_message: ClassVar[str | Promise] = _TOO_MANY_REQUESTS
+    default_message: ClassVar[StrOrPromise] = _TOO_MANY_REQUESTS
     status_code: ClassVar[HTTPStatus] = HTTPStatus.TOO_MANY_REQUESTS
 
     def __init__(
         self,
-        msg: str | Promise | None = None,
+        msg: StrOrPromise | None = None,
         *,
         headers: dict[str, str] | None = None,
     ) -> None:

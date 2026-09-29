@@ -1,14 +1,17 @@
 import sys
 import textwrap
+from http import HTTPStatus
 from typing import Generic, TypeVar
 
 import pydantic
 import pytest
+from django.http import HttpResponse
 
-from dmr import Body, Controller
+from dmr import Body, Controller, ResponseSpec, validate
 from dmr.exceptions import UnsolvableAnnotationsError
 from dmr.plugins.pydantic import PydanticSerializer
 from dmr.serializer import BaseSerializer
+from dmr.types import safe_typevar
 
 _SerializerT = TypeVar('_SerializerT', bound=BaseSerializer)
 _ModelT = TypeVar('_ModelT')
@@ -90,11 +93,45 @@ def test_generic_parser_in_concrete_controller() -> None:
             """Must raise."""
 
 
+def test_generics_in_validate() -> None:
+    """Ensure that ``@validate`` works with generics."""
+
+    class _BaseController(
+        Controller[_SerializerT],
+        Generic[_SerializerT, _ModelT, _OtherT],
+    ):
+        @validate(
+            ResponseSpec(
+                safe_typevar('_OtherT', stacklevel=2),
+                status_code=HTTPStatus.OK,
+            ),
+        )
+        def post(self, parsed_body: Body[_ModelT]) -> HttpResponse:
+            raise NotImplementedError
+
+    assert _BaseController.is_abstract
+
+    class FinalController(
+        _BaseController[PydanticSerializer, _BodyModel, list[str]],
+    ):
+        """Final level."""
+
+    assert not FinalController.is_abstract
+    assert FinalController.serializer is PydanticSerializer
+    metadata = FinalController.api_endpoints['POST'].metadata
+    assert len(metadata.component_parsers) == 1
+    assert metadata.component_parsers[0][1] == _BodyModel
+    assert metadata.responses
+    response = metadata.responses[HTTPStatus.OK]
+    assert response.return_type == list[str]
+    assert response.status_code == HTTPStatus.OK
+
+
 @pytest.mark.skipif(
     sys.version_info < (3, 12),
     reason='PEP-695 was added in 3.12',
 )
-def test_pep695_type_params() -> None:  # pragma: no cover
+def test_pep695_type_params() -> None:  # pragma: >=3.12 cover
     """Ensure that PEP-695 syntax is supported on 3.12+."""
     # We have to use `exec` here, because 3.12+ syntax
     # will cause `SyntaxError` for the whole test module.

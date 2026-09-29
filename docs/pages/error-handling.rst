@@ -16,19 +16,19 @@ All error handling functions always accept 3 arguments:
 Here's how it works:
 
 1. We first try to call ``error_handler`` that was passed into the endpoint
-   definition via :func:`~dmr.endpoint.modify`
-   or :func:`~dmr.endpoint.validate`
+   definition via :data:`~dmr.endpoint.modify`
+   or :data:`~dmr.endpoint.validate`
 2. If it returns :class:`django.http.HttpResponse`, return it to the user
-3. If it raises, call
+3. If it raises an error, call
    :meth:`~dmr.controller.Controller.handle_error` for sync
    controllers
    and :meth:`~dmr.controller.Controller.handle_async_error`
-   for async controllers
+   for async controllers with this raised error
 4. If controller's handler returns :class:`~django.http.HttpResponse`,
    return it to the user
-5. If it raises, call configured global error handler, by default
-   it is :func:`~dmr.errors.global_error_handler`
-   (it is always sync)
+5. If it raises an error, call configured global error handler
+   with this raised error, by default
+   it is :func:`~dmr.errors.global_error_handler` (it is always sync)
 
 .. warning::
 
@@ -52,6 +52,17 @@ Here's how it works:
   You don't need to catch ``APIError`` in any way,
   unless you know what you are doing.
 
+You can change the error instance that is handled during
+the error handling pipeline. For example:
+
+- Some ``YourCustomError`` happens in your endpoint
+- It is handled in a custom endpoint-level handler,
+  which raises ``YourIntermediateError`` instead
+- Custom controller-level handler catches it and raises
+  :exc:`~dmr.exceptions.ValidationError` instead
+- ``ValidationError`` is handled by the default
+  :func:`~dmr.errors.global_error_handler` and returns an expected response
+
 
 Customizing endpoint error handler
 ----------------------------------
@@ -64,10 +75,9 @@ Let's pass custom error handling to a single endpoint:
   :linenos:
 
 In this example we add error handling defined as ``division_error``
-to ``patch`` endpoint (which serves as a division operation),
-while keeping ``post`` endpoint (which serves as a multiply operation)
+to ``patch`` endpoint, while keeping ``post`` endpoint
 without a custom error handler.
-Because :exc:`ZeroDivisionError` can't happen in ``post``.
+So, the same request to ``post`` results in a default ``500`` response.
 
 Per-endpoint's error handling has a priority
 over per-controller and global handlers.
@@ -147,6 +157,113 @@ The same error handling logic can be represented as a diagram:
   in the provided scope and return ``500`` errors with the correct payload.
 
 
+.. _error-responses-validation:
+
+Validating error responses
+--------------------------
+
+Error responses are validated like any other response.
+With :data:`~dmr.settings.Settings.validate_responses` enabled,
+only the status codes that you describe are allowed to be returned.
+
+This matters the most for ``500``: we raise
+:exc:`~dmr.exceptions.InternalServerError` ourselves in several places,
+and your own code can raise it as well.
+An undescribed ``500`` will not reach the client, response validation
+will replace it with ``422 Returned status code 500 is not specified``.
+
+Pick the way that matches how much you promise to your clients:
+
+.. tabs::
+
+  .. tab:: Describe it
+
+    The strictest option: ``500`` becomes a part of your public contract.
+
+    It is listed in the OpenAPI schema, so clients can generate code
+    for it and handle it in a typed way. Its body is still validated,
+    so you cannot accidentally return something
+    that does not match the schema.
+
+    .. literalinclude:: /examples/error_handling/server_error_described.py
+      :caption: views.py
+      :language: python
+      :linenos:
+      :emphasize-lines: 16-20
+
+    Use :data:`~dmr.settings.Settings.responses`
+    to do the same for the whole API at once:
+
+    .. code-block:: python
+      :caption: settings.py
+
+      >>> from http import HTTPStatus
+
+      >>> from dmr import ResponseSpec
+      >>> from dmr.errors import ErrorModel
+      >>> from dmr.settings import Settings
+
+      >>> DMR_SETTINGS = {
+      ...     Settings.responses: [
+      ...         ResponseSpec(
+      ...             ErrorModel,
+      ...             status_code=HTTPStatus.INTERNAL_SERVER_ERROR,
+      ...         ),
+      ...     ],
+      ... }
+
+  .. tab:: Test it, disable validation
+
+    Here ``500`` is a bug and not a feature, so we don't promise it
+    to anyone. Instead, we cover the endpoint with tests to be sure
+    that regular requests never produce it:
+
+    .. literalinclude:: /examples/error_handling/server_error_undocumented.py
+      :caption: views.py
+      :language: python
+      :linenos:
+
+    .. literalinclude:: /examples/error_handling/server_error_test.py
+      :caption: tests.py
+      :language: python
+      :linenos:
+
+    And then we turn the validation off in production,
+    where it costs performance anyway, see :ref:`response_validation`:
+
+    .. code-block:: python
+      :caption: settings.py
+
+      >>> DMR_SETTINGS = {Settings.validate_responses: False}
+
+    In development the validation is still on, so an unexpected ``500``
+    shows up as a ``422`` telling you that this status code
+    is not described. Which is exactly what it is: an undescribed response.
+
+  .. tab:: Exclude it
+
+    The simplest option: keep the validation on,
+    but tell us not to validate this status code
+    with :data:`~dmr.settings.Settings.exclude_validate_responses`.
+
+    ``500`` does not get into the OpenAPI schema
+    and reaches the client as-is:
+
+    .. literalinclude:: /examples/error_handling/server_error_excluded.py
+      :caption: views.py
+      :language: python
+      :linenos:
+      :emphasize-lines: 15-16
+
+    All other status codes are still validated.
+    The same can be set globally
+    and per-endpoint, see :ref:`exclude-validate-responses-levels`.
+
+.. versionadded:: 0.15.0
+
+  :data:`~dmr.settings.Settings.exclude_validate_responses`
+
+
 .. _customizing-error-messages:
 
 Customizing error messages
@@ -178,6 +295,14 @@ See :ref:`content negotiation <error-model-negotiation>`
 docs about how to use different error models
 for different content types.
 
+But, there are more places that can have their own error schemas:
+
+1. :func:`~dmr.security.csrf.build_csrf_handler`
+   and :class:`~dmr.security.csrf.CSRFSemanticSchemaProvider`
+   if you are using CSRF controllers
+2. :func:`~dmr.routing.build_404_handler` for default ``404`` responses
+3. :func:`~dmr.routing.build_500_handler` for default ``500`` responses
+
 Customizing error headers and cookies
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -203,6 +328,68 @@ For this, override :meth:`~dmr.controller.Controller.to_response`.
 
 This can also be used to attach ``RateLimit`` headers
 and other :doc:`throttling` information.
+
+.. _union-response-metadata:
+
+Headers and cookies of union responses
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A single response can be a union of several models,
+and :class:`~dmr.metadata.ResponseSpecMetadata` can be placed
+on the union or on any of its members. Where you put it changes
+what you promise:
+
+.. literalinclude:: /examples/error_handling/union_response_headers.py
+  :caption: views.py
+  :language: python
+  :linenos:
+  :emphasize-lines: 23-28
+
+Here only ``User`` responses carry ``X-User-Id``,
+a ``str`` response is returned without it. Since one response
+has one set of specs, we document ``X-User-Id`` as
+``required=False``: it can be missing, so we don't validate
+that it is always there.
+
+Annotate the whole union instead when every response has the header:
+
+.. code-block:: python
+
+  >>> from typing import Annotated
+
+  >>> from dmr import HeaderSpec
+  >>> from dmr.metadata import ResponseSpecMetadata
+
+  >>> AlwaysIdentified = Annotated[
+  ...     str | int,
+  ...     ResponseSpecMetadata(headers={'X-User-Id': HeaderSpec()}),
+  ... ]
+
+Now ``X-User-Id`` is required for both ``str`` and ``int`` responses,
+and a response without it fails validation.
+
+The same rule applies when several members are annotated:
+a header is required only when every member of the union declares it
+as required. Specs of all members end up in the documentation either way.
+
+.. warning::
+
+  Do not design new APIs this way.
+
+  One response with one status code should always have the same set of
+  required headers and cookies. When it does not, every client has to
+  inspect the body first to learn which headers it is allowed to read,
+  and the OpenAPI schema cannot express that dependency at all: it only
+  says the header is optional.
+
+  We support per-member metadata for legacy code and migrations, where
+  a response already behaves like this and the behaviour cannot be changed
+  yet. For new endpoints, annotate the whole union, or split the response
+  into separate status codes.
+
+.. versionchanged:: 0.16.0
+
+  Metadata of union members used to be ignored completely.
 
 
 Problem Details
@@ -328,9 +515,11 @@ API Reference
 
 .. autoclass:: dmr.errors.ErrorModel
   :members:
+  :show-inheritance:
 
 .. autoclass:: dmr.errors.ErrorDetail
   :members:
+  :show-inheritance:
 
 .. autofunction:: dmr.errors.format_error
 

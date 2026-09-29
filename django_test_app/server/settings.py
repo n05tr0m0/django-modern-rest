@@ -10,9 +10,11 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
+import os
 import tempfile
 from pathlib import Path
 
+import dj_database_url
 from csp.constants import NONE, SELF
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -43,13 +45,17 @@ INSTALLED_APPS = [
     # Custom:
     'server.apps.model_simple',
     'server.apps.model_fk',
+    'server.apps.model_cursor',
     'server.apps.middlewares',
     'server.apps.controllers',
-    'server.apps.openapi',
     'server.apps.negotiations',
     'server.apps.jwt_auth',
     'server.apps.django_session_auth',
+    'server.apps.token_auth',
+    'server.apps.token_custom_user',
     'server.apps.etag',
+    'server.apps.external_views',
+    'server.apps.allauth_auth',
     # Django:
     'django.contrib.admin',
     'django.contrib.auth',
@@ -60,9 +66,12 @@ INSTALLED_APPS = [
     # DMR:
     'dmr',
     'dmr.security.jwt.blocklist',
-    'dmr.security.token',
+    'dmr.security.token.app',
     # Third party:
     'csp',
+    'allauth',
+    'allauth.account',
+    'allauth.headless',
 ]
 
 MIDDLEWARE = [
@@ -77,6 +86,8 @@ MIDDLEWARE = [
     'django.middleware.locale.LocaleMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Third party:
+    'allauth.account.middleware.AccountMiddleware',
 ]
 
 ROOT_URLCONF = 'server.urls'
@@ -102,13 +113,12 @@ WSGI_APPLICATION = 'server.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+_DEFAULT_DB_PATH = BASE_DIR / 'db.sqlite3'
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    },
+    'default': dj_database_url.parse(
+        os.environ.get('TEST_DATABASE_URL', f'sqlite:///{_DEFAULT_DB_PATH}'),
+    ),
 }
-
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
@@ -154,10 +164,7 @@ STATIC_ROOT = Path(tempfile.gettempdir()) / 'dmr-example-staticfiles'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # DMR settings for the test application:
-DMR_SETTINGS = {
-    # Allow unsafe cache backends (LocMemCache) for testing:
-    'throttling_allow_unsafe_cache': None,
-}
+DMR_SETTINGS: dict[str, object] = {}
 
 # Content Security Policy:
 # https://django-csp.readthedocs.io/en/latest/configuration.html

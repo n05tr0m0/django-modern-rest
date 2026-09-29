@@ -21,13 +21,21 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.11', '3.12', '3.13', '3.14']
-        docker-compose-services: ['redis']
+        redis-image: ['redis:8-alpine']
+        just-recipy: ['test']
         include:
           - python-version: '3.14t'
-            force_free_gil: true
-            docker-compose-services: 'redis'
+            redis-image: 'redis:7-alpine'
+            force-free-gil: true
           - python-version: '3.13'
-            docker-compose-services: 'valkey'
+            redis-image: 'valkey/valkey:9-alpine'
+          # Integration tests with different databases.
+          - python-version: '3.13'
+            redis-image: redis:8-alpine
+            just-recipy: test_postgres
+          - python-version: '3.13'
+            redis-image: redis:8-alpine
+            just-recipy: test_mysql
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,53 +43,47 @@ jobs:
         persist-credentials: false
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: ${{ matrix.python-version }}
 
     - name: Install uv
-      uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
     - name: Install just
       run: uv tool install rust-just
 
-    - name: Pull and build docker compose services
-      if: ${{ matrix.docker-compose-services }}
-      run: |
-        docker compose pull ${{ matrix.docker-compose-services }}
-        docker compose up --detach ${{ matrix.docker-compose-services }}
-
     - name: Install dependencies
       run: |
         # System deps:
-        sudo apt update && sudo apt install -y gettext wait-for-it
+        sudo apt update && sudo apt install -y gettext default-libmysqlclient-dev gcc libpq-dev
 
         # Python deps:
-        just install
+        just install-integration
         # We don't install `orjson` in `pyproject.toml`,
         # because we run `3.14t` as well and it cannot be installed there :(
         # No way to exclude the platform on a file level.
         uv pip install orjson || true
 
-    - name: Wait for database to come online
-      if: ${{ matrix.docker-compose-services }}
-      run: wait-for-it --host='localhost' --port=6379 --timeout=30 --strict
+    - name: Prefetch redis image
+      if: ${{ matrix.redis-image }}
+      run: docker pull "${{ matrix.redis-image }}"
 
     - name: Run checks
-      run: just test
+      run: just ${{ matrix.just-recipy || 'test' }}
       env:
-        PYTHON_GIL: ${{ matrix.force_free_gil && '0' || '1' }}
+        PYTHON_GIL: ${{ matrix.force-free-gil && '0' || '1' }}
+        REDIS_IMAGE: ${{ matrix.redis-image }}
+
+    - name: Check compiled translations
+      run: just translations-check
 
     # Upload coverage to codecov: https://codecov.io/
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+      uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
       with:
         files: ./coverage.xml
         token: ${{ secrets.CODECOV_TOKEN }}
 
     - name: Tracecov report
       run: cat tracecov-report.md >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Stop docker compose services
-      if: ${{ always() && matrix.docker-compose-services }}
-      run: docker compose down || true

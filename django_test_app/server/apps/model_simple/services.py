@@ -1,3 +1,5 @@
+from typing import final
+
 from django.db import IntegrityError
 from django.db.models import QuerySet
 
@@ -5,12 +7,13 @@ from server.apps.model_simple.models import User
 from server.apps.model_simple.serializers import SimpleUserCreateSchema
 
 
+@final
 class UniqueConstraintError(Exception):
     """Fields ``email`` and ``customer_service_uid`` must be unique."""
 
 
 def user_create_service(user_schema: SimpleUserCreateSchema) -> User:
-    """This is a function just for the demo purpose, it is usually a class."""
+    """This is a function just for the demo's purpose, it is usually a class."""
     try:
         return User.objects.create(
             email=user_schema.email,

@@ -14,9 +14,9 @@ _default: (sphinx 'help')
 sphinx +targets:
   #!/usr/bin/env bash
   for target in {{targets}}; do
-    uv run python -msphinx -M "$target" "{{sourcedir}}" \
+    uv run python -m sphinx -M "$target" "{{sourcedir}}" \
       "{{builddir}}" {{sphinxopts}}
   done
 
 # Pass-through: route any target to Sphinx
-build +targets='clean html': (sphinx targets)
+build +targets='html': (sphinx targets)

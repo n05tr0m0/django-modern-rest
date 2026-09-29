@@ -1,99 +1,51 @@
-from collections.abc import Mapping
-from http import HTTPStatus
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, TypeGuard
 
 from django.conf import settings
 from typing_extensions import override
 
-from dmr.exceptions import NotAuthenticatedError
-from dmr.metadata import (
-    EndpointMetadata,
-    ResponseSpec,
-    ResponseSpecProvider,
-)
-from dmr.openapi.objects import Reference, SecurityRequirement, SecurityScheme
-from dmr.security._csrf import (
-    ensure_csrf,  # noqa: WPS450  # pyright: ignore[reportPrivateUsage]
-)
+from dmr.openapi.objects import SecurityScheme
 from dmr.security.base import AsyncAuth, SyncAuth
+from dmr.security.csrf import CSRF_SCHEME_NAME, CSRFAuthMixin
 
 if TYPE_CHECKING:
+    from django.contrib.auth.models import AbstractBaseUser, AnonymousUser
+
     from dmr.controller import Controller
     from dmr.endpoint import Endpoint
     from dmr.serializer import BaseSerializer
 
 
-class _DjangoSessionAuth(ResponseSpecProvider):
-    __slots__ = ('csrf_scheme_name', 'security_scheme_name')
+class _DjangoSessionAuth(CSRFAuthMixin):
+    """Reuses the user that Django's session middleware already resolved."""
+
+    __slots__ = (
+        'csrf_scheme_name',
+        'security_scheme_name',
+    )
 
     def __init__(
         self,
         security_scheme_name: str = 'django_session',
-        csrf_scheme_name: str = 'csrf',
+        csrf_scheme_name: str = CSRF_SCHEME_NAME,
     ) -> None:
         self.security_scheme_name = security_scheme_name
         self.csrf_scheme_name = csrf_scheme_name
 
-    @property
-    def security_schemes(self) -> dict[str, SecurityScheme | Reference]:
-        """Provides a security schema definition."""
-        schemes: dict[str, SecurityScheme | Reference] = {
-            self.security_scheme_name: SecurityScheme(
-                type='apiKey',
-                name=settings.SESSION_COOKIE_NAME,
-                security_scheme_in='cookie',
-                description='Reusing standard Django auth flow for API',
-            ),
-        }
-        if self._uses_csrf_cookie():
-            schemes[self.csrf_scheme_name] = SecurityScheme(
-                type='apiKey',
-                name=settings.CSRF_COOKIE_NAME,
-                security_scheme_in='cookie',
-                description='CSRF protection',
-            )
-        return schemes
-
-    @property
-    def security_requirement(self) -> SecurityRequirement:
-        """Provides a security schema usage requirement."""
-        requirement: SecurityRequirement = {self.security_scheme_name: []}
-        if self._uses_csrf_cookie():
-            requirement[self.csrf_scheme_name] = []
-        return requirement
-
     @override
-    def provide_response_specs(
+    def auth_security_scheme(self) -> SecurityScheme:
+        """Provides a security schema definition."""
+        return SecurityScheme(
+            type='apiKey',
+            name=settings.SESSION_COOKIE_NAME,
+            security_scheme_in='cookie',
+            description='Reusing standard Django auth flow for API',
+        )
+
+    def _is_user_present(
         self,
-        metadata: EndpointMetadata,
-        controller_cls: type['Controller[BaseSerializer]'],
-        existing_responses: Mapping[HTTPStatus, ResponseSpec],
-    ) -> list[ResponseSpec]:
-        """Provides responses that can happen when user is not authed."""
-        return [
-            *self._add_new_response(
-                ResponseSpec(
-                    controller_cls.error_model,
-                    status_code=NotAuthenticatedError.status_code,
-                    description='Raised when auth was not successful',
-                ),
-                existing_responses,
-            ),
-            *self._add_new_response(
-                ResponseSpec(
-                    controller_cls.error_model,
-                    status_code=HTTPStatus.FORBIDDEN,
-                    description='Raised when CSRF check failed',
-                ),
-                existing_responses,
-            ),
-        ]
-
-    def _uses_csrf_cookie(self) -> bool:
-        return not settings.CSRF_USE_SESSIONS
-
-    def _ensure_csrf(self, controller: 'Controller[BaseSerializer]') -> None:
-        ensure_csrf(controller)
+        user: 'AbstractBaseUser | AnonymousUser | None',
+    ) -> TypeGuard['AbstractBaseUser']:
+        return user is not None and user.is_authenticated and user.is_active
 
 
 class DjangoSessionSyncAuth(_DjangoSessionAuth, SyncAuth):
@@ -101,9 +53,13 @@ class DjangoSessionSyncAuth(_DjangoSessionAuth, SyncAuth):
     Reuses Django's regular session auth for the API.
 
     This class is used for sync endpoints.
+    CSRF is automatically enforced before any other actions.
 
     See also:
         https://docs.djangoproject.com/en/stable/topics/auth/
+
+    .. versionchanged:: 0.16.0
+        Fixed how CSRF schema is generated.
 
     """
 
@@ -129,9 +85,9 @@ class DjangoSessionSyncAuth(_DjangoSessionAuth, SyncAuth):
         For example: checking that user is staff / superuser.
         """
         user = getattr(controller.request, 'user', None)
-        if not user or not user.is_authenticated or not user.is_active:
+        if not self._is_user_present(user):
             return None
-
+        # It is important that we first can skip auth with no `user`, see #1289
         self._ensure_csrf(controller)
         return self
 
@@ -141,9 +97,13 @@ class DjangoSessionAsyncAuth(_DjangoSessionAuth, AsyncAuth):
     Reuses Django's regular session auth for the API.
 
     This class is used for async endpoints.
+    CSRF is automatically enforced before any other actions.
 
     See also:
         https://docs.djangoproject.com/en/stable/topics/auth/
+
+    .. versionchanged:: 0.16.0
+        Fixed how CSRF schema is generated.
 
     """
 
@@ -172,8 +132,8 @@ class DjangoSessionAsyncAuth(_DjangoSessionAuth, AsyncAuth):
         if auser is None:
             return None
         user = await auser()
-        if not user.is_authenticated or not user.is_active:
+        if not self._is_user_present(user):
             return None
-
+        # It is important that we first can skip auth with no `user`, see #1289
         self._ensure_csrf(controller)
         return self

@@ -18,6 +18,96 @@ Python REST frameworks is code re-usability.
 What does ``django-modern-rest`` offer instead?
 
 
+Explicitly abstract controllers
+-------------------------------
+
+A controller can have an exact serializer and endpoints,
+but you might still not want to route it: you only want to reuse it.
+Declare ``is_abstract = True`` explicitly for this:
+
+.. literalinclude:: /examples/reusable_code/explicit_abstract.py
+  :caption: views.py
+  :linenos:
+  :language: python
+
+Such a controller does not build any endpoints,
+they are only created in a concrete context.
+Subclasses that don't declare ``is_abstract`` themselves
+are concrete again, even when their base controller is explicitly abstract.
+So, ``MyController`` from the example above does the same
+``GET`` request as its base, but it can be routed.
+
+.. versionadded:: 0.16.0
+
+
+.. _modify-and-validate-with-extras:
+
+Providing extras for ``@modify`` and ``@validate``
+--------------------------------------------------
+
+Your custom controllers might require custom parameters that users can provide
+to :data:`~dmr.endpoint.validate` and :data:`~dmr.endpoint.modify`.
+
+To do so, we utilize ``extras=`` parameter. By default it is always typed
+as empty sentinel, because default controller do not allow any extra parameters.
+
+Three steps are needed:
+
+1. Define a subclass of :class:`~dmr.endpoint.Extras`.
+   Its fields can default to ``EMPTY`` if some arguments can be missing
+2. Define :attr:`~dmr.endpoint.Extras.build` with how to build your value
+   from several configuration layers, you can use global settings there as well
+3. Create typed decorators by passing this class
+   to :class:`~dmr.endpoint.ModifyEndpoint`
+   and :class:`~dmr.endpoint.ValidateEndpoint`
+4. Assign an instance of this class to ``extras`` attribute
+   of your controller. It enables ``extras=`` for all endpoints
+   of this controller and provides controller-level defaults
+
+:meth:`~dmr.endpoint.Extras.build` receives the endpoint layer,
+which is ``EMPTY`` when ``extras=`` is not passed,
+and the controller layer as instances of your class,
+and returns the resolved value.
+It is stored inside :attr:`~dmr.metadata.EndpointMetadata.extras`
+and can be read with :meth:`~dmr.endpoint.Extras.of` in a typed way.
+
+First, define the extras model itself:
+
+.. literalinclude:: /examples/reusable_code/extras_model.py
+  :caption: views.py
+  :linenos:
+  :language: python
+
+Then define and use new endpoint decorators:
+
+.. tabs::
+
+  .. tab:: modify
+
+    Real world example: :data:`dmr.streaming.modify`
+
+    .. literalinclude:: /examples/reusable_code/extras_modify.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+  .. tab:: validate
+
+    Real world example: :data:`dmr.streaming.validate`
+
+    .. literalinclude:: /examples/reusable_code/extras_validate.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+This way your controller subtypes can have any extras that you need!
+
+These definitions would only differ in terms of typing.
+Everything else would work the same way.
+
+.. versionadded:: 0.16.0
+
+
 .. _reusable-controllers:
 
 Reusable controllers
@@ -41,22 +131,46 @@ Let's try to create two exact controllers with exact serializers:
 
 .. tabs::
 
-    .. tab:: msgspec
+  .. tab:: msgspec
 
-      .. literalinclude:: /examples/reusable_code/msgspec_controller.py
-        :caption: views.py
-        :linenos:
-        :language: python
+    .. literalinclude:: /examples/reusable_code/msgspec_controller.py
+      :caption: views.py
+      :linenos:
+      :language: python
 
-    .. tab:: pydantic
+  .. tab:: pydantic
 
-      .. literalinclude:: /examples/reusable_code/pydantic_controller.py
-        :caption: views.py
-        :linenos:
-        :language: python
+    .. literalinclude:: /examples/reusable_code/pydantic_controller.py
+      :caption: views.py
+      :linenos:
+      :language: python
 
 Basically - we just specify what kind of serializer to use. And that's it.
 But, this is just the first step. We can do much more!
+
+.. note::
+
+  Only controllers with an exact serializer and at least one endpoint
+  can be routed. Reusable ones have ``is_abstract`` set to ``True``
+  and raise :exc:`~dmr.exceptions.EndpointMetadataError`
+  when you call ``.as_view()`` on them.
+  Route their subclasses instead.
+
+  .. versionadded:: 0.16.0
+
+.. tip::
+
+  Annotate class-level options like ``responses``, ``auth``, ``parsers``,
+  ``renderers``, and ``throttling`` in controllers that will be subclassed.
+
+  Without an annotation type-checkers infer a fixed-size tuple
+  from the value you assign, and subclasses won't be able
+  to add or to remove items from it.
+
+  .. literalinclude:: /examples/reusable_code/reusable_options.py
+    :caption: views.py
+    :linenos:
+    :language: python
 
 
 Generic parsing and response models
@@ -67,6 +181,9 @@ Next, let's define a reusable controller that will have:
 - customizable serializer
 - customizable request model
 - customizable response body
+
+Raw endpoints support
+~~~~~~~~~~~~~~~~~~~~~
 
 The process will look exactly the same:
 
@@ -84,19 +201,19 @@ We would need to implement this method in all of our concrete controllers.
 
 .. tabs::
 
-    .. tab:: msgspec
+  .. tab:: msgspec
 
-      .. literalinclude:: /examples/reusable_code/parsing_msgspec.py
-        :caption: views.py
-        :linenos:
-        :language: python
+    .. literalinclude:: /examples/reusable_code/parsing_msgspec.py
+      :caption: views.py
+      :linenos:
+      :language: python
 
-    .. tab:: pydantic
+  .. tab:: pydantic
 
-      .. literalinclude:: /examples/reusable_code/parsing_pydantic.py
-        :caption: views.py
-        :linenos:
-        :language: python
+    .. literalinclude:: /examples/reusable_code/parsing_pydantic.py
+      :caption: views.py
+      :linenos:
+      :language: python
 
 Note that ``msgspec`` and ``pydantic`` controllers in this
 case have completely different request and response bodies
@@ -111,3 +228,315 @@ and return type validation.
   the same way for concrete controllers.
 
   We infer the passed values during import time and use real types.
+
+Real endpoints support
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 0.14.0
+
+The same would work with endpoints defined
+with :data:`~dmr.endpoint.validate` decorator.
+
+The logic is the same, but syntax is a bit different.
+
+.. tip::
+
+  By default ``mypy`` and other type-checkers won't allow to write
+  ``ResponseSpec(_TypeT, status_code=OK)``, because type vars can't be used
+  in such places according
+  to the `typing spec <https://typing.python.org/en/latest/#specification>`_.
+
+  So, we provide :func:`dmr.types.safe_typevar` helper
+  to get rid of the type-checking errors.
+
+Here's how we can do the same example, but with ``@validate``.
+The reusable part:
+
+.. literalinclude:: /examples/reusable_code/validate_reusable.py
+  :caption: views.py
+  :linenos:
+  :language: python
+
+And then - implementations:
+
+.. tabs::
+
+  .. tab:: msgspec
+
+    .. literalinclude:: /examples/reusable_code/validate_msgspec.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+  .. tab:: pydantic
+
+    .. literalinclude:: /examples/reusable_code/validate_pydantic.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+This way offers you more control over the response headers, cookies, etc.
+Choose the one that fits best of the job.
+
+.. _type-variable-defaults:
+
+Type variable defaults
+~~~~~~~~~~~~~~~~~~~~~~
+
+.. versionadded:: 0.16.0
+
+Type variables can have defaults, as described in :pep:`696`.
+We use them when a subclass does not provide some of the type args.
+
+There are three ways to define them:
+
+- ``typing_extensions.TypeVar('_ModelT', default=MyModel)`` on any version
+- :class:`typing.TypeVar` with the same ``default=`` argument on 3.13 and above
+- the native ``class Reusable[_ModelT = MyModel]`` syntax on 3.13 and above
+
+.. literalinclude:: /examples/reusable_code/reusable_defaults.py
+  :caption: views.py
+  :linenos:
+  :language: python
+
+The request model is now optional for the subclasses:
+
+.. tabs::
+
+  .. tab:: with default
+
+    .. literalinclude:: /examples/reusable_code/defaults_pydantic.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+  .. tab:: substituting default
+
+    .. literalinclude:: /examples/reusable_code/defaults_exact.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+Defaults can also point to other type variables:
+``_ResponseBodyT = TypeVar('_ResponseBodyT', default=_RequestModelT)``
+means "the response body is the request model, unless told otherwise".
+
+Serializers can have defaults as well. Then a subclass
+that passes no type args at all is a concrete controller,
+because it has an exact serializer:
+
+.. literalinclude:: /examples/reusable_code/defaults_serializer.py
+  :caption: views.py
+  :linenos:
+  :language: python
+
+.. important::
+
+  A default only applies to the subclasses, never to the reusable
+  controller that declares it. ``ReusableController`` above still has
+  ``is_abstract`` set to ``True`` and cannot be routed,
+  even though every one of its type variables has a default.
+
+  This is the same rule as everywhere else: we only build endpoints
+  for concrete controllers, and a type variable is not an exact type.
+
+.. note::
+
+  A type variable without a default is still required.
+  Controllers that don't have an exact serializer
+  stay abstract, as always.
+
+Write the subclass when you have anything else to say: a setting
+to change, a hook to redefine, or a name to route several times.
+
+
+.. _lazy-reusable-endpoints:
+
+Lazy reusable endpoints
+-----------------------
+
+In some cases you need to do even more
+than request / response payload modifications.
+Sometimes, you need to change the status code, header and cookie specs,
+maybe even auth or throttling definitions.
+
+.. important::
+
+  We only create endpoints when **concrete** controller is built.
+  We never create endpoins definitions for reusable controllers.
+  So, all endpoints are always created in the correct - final - context.
+
+To use the full customization, we provide:
+
+- :meth:`dmr.endpoint.ModifyEndpoint.lazy` method to work
+  with :data:`~dmr.endpoint.modify`. It accepts
+  a function or a :class:`classmethod` to lazily provide a spec in the future
+- :meth:`dmr.endpoint.ValidateEndpoint.lazy` method to work
+  with :data:`~dmr.endpoint.validate`. It accepts
+  a function or a :class:`classmethod` to lazily provide a spec in the future
+
+Here's how it works:
+
+.. tabs::
+
+  .. tab:: modify
+
+    .. literalinclude:: /examples/reusable_code/lazy_modify.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+  .. tab:: validate
+
+    .. literalinclude:: /examples/reusable_code/lazy_validate.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+What happens here?
+
+1. We define a reusable controller with lazy endpoint specification
+2. We define ``lazy_spec`` classmethod that will provide the actual decorator
+   during the child - final - controller build time
+3. We use class-level API to define constants that people
+   can modify in their child - final - controllers if needed.
+   But, the default implementation would work the way we described it
+
+Notice that we use special types to define
+the return type from the ``lazy_spec`` classmethod.
+Here are all of them, choose the one for your task:
+
+.. list-table::
+  :header-rows: 1
+
+  * - Type name
+    - Original decorator
+    - What it does
+
+  * - :class:`~dmr.endpoint.ModifyAnyCallable`
+    - :data:`~dmr.endpoint.modify`
+    - Creates a decorator for endpoints without sync / async specifics
+  * - :class:`~dmr.endpoint.ModifySyncCallable`
+    - :data:`~dmr.endpoint.modify`
+    - Creates a decorator for sync endpoints
+  * - :class:`~dmr.endpoint.ModifyAsyncCallable`
+    - :data:`~dmr.endpoint.modify`
+    - Creates a decorator for async endpoints
+
+  * - :class:`~dmr.endpoint.ValidateAnyCallable`
+    - :data:`~dmr.endpoint.validate`
+    - Creates a decorator for endpoints without sync / async specifics
+  * - :class:`~dmr.endpoint.ValidateSyncCallable`
+    - :data:`~dmr.endpoint.validate`
+    - Creates a decorator for sync endpoints
+  * - :class:`~dmr.endpoint.ValidateAsyncCallable`
+    - :data:`~dmr.endpoint.validate`
+    - Creates a decorator for async endpoints
+
+Basically, there are several major rules:
+
+1. Prefer defining decorators that do not care about sync / async code, use
+   :class:`~dmr.endpoint.ModifyAnyCallable`
+   and :class:`~dmr.endpoint.ValidateAnyCallable` by default
+2. If you need sync / async details like ``error_handler``, ``auth``,
+   or ``throttling`` - then use exact type
+   for sync / async decorator of your choice
+3. Do not mix specs for ``@validate`` and ``@modify``, it will be a type error
+
+Customizing definitions
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Now, let's use the reusable controller we defined above,
+but we would customize the response status code,
+just as an example of power that we have:
+
+.. tabs::
+
+  .. tab:: modify
+
+    .. literalinclude:: /examples/reusable_code/lazy_modify_customize.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+  .. tab:: validate
+
+    .. literalinclude:: /examples/reusable_code/lazy_validate_customize.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+Notice that the response code would be changed in both the spec and runtime.
+And, of course, you can combine this approach
+with generic serializer, or request and response payloads.
+Giving the full control over code reuse.
+
+Overriding definitions
+~~~~~~~~~~~~~~~~~~~~~~
+
+To finish this example off, we would completely override the spec
+in a child controller. Sometimes users might want to do that,
+for example: to provide auth or custom OpenAPI spec.
+But, user is free to modify any parts of the spec, if needed.
+
+.. tabs::
+
+  .. tab:: modify
+
+    .. literalinclude:: /examples/reusable_code/lazy_modify_override.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+  .. tab:: validate
+
+    .. literalinclude:: /examples/reusable_code/lazy_validate_override.py
+      :caption: views.py
+      :linenos:
+      :language: python
+
+.. note::
+
+  Notice that ``lazy_spec`` classmethod is resolve from the final controller,
+  not the one that was used during the decoration time.
+
+  ``@classmethod`` is preferable over ``lambda`` functions,
+  because they provide easier override API and they are fully typed.
+  The ``controller`` argument of a ``lambda`` is typed as ``type[Any]``,
+  so attribute access on it is not checked by type checkers.
+
+
+Where is it actually helpful in practice?
+-----------------------------------------
+
+We use this feature a lot in the pre-defined views
+we provide with the framework.
+
+For example, we use this in :doc:`auth/jwt` obtain views:
+
+1. :class:`~dmr.security.jwt.views.ObtainTokensSyncController`
+   for sync controllers
+2. :class:`~dmr.security.jwt.views.ObtainTokensAsyncController`
+   for async controllers
+
+Usage example:
+
+.. literalinclude:: /examples/auth/jwt/jwt_obtain_tokens.py
+  :caption: views.py
+  :linenos:
+  :language: python
+
+Why is it useful?
+
+1. We can work with any serializer
+2. We can change our request payload to be whatever we need,
+   it would be correctly rendered in the final OpenAPI schema
+3. We can change the response schema,
+   which would also be correctly rendered in the OpenAPI
+
+This feature allows us to have type-safe
+and OpenAPI-first approach to code reusability,
+great DX, and Python-native abstractions.
+
+Users / plugin developers can do the same
+to provide universal customizable controllers.

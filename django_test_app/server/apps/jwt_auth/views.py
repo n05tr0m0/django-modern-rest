@@ -1,14 +1,28 @@
 import datetime as dt
-from typing import final
+from http import HTTPStatus
+from typing import Final, final
 
 import pydantic
 from asgiref.sync import async_to_sync
+from django.urls import reverse_lazy
+from django.views.decorators.debug import sensitive_variables
 from typing_extensions import override
 
 from dmr import Controller
 from dmr.plugins.pydantic import PydanticSerializer
-from dmr.security.jwt import JWTAsyncAuth, JWTSyncAuth
+from dmr.security.jwt import (
+    CookieJWTAsyncAuth,
+    CookieJWTSyncAuth,
+    HeaderJWTAsyncAuth,
+    HeaderJWTSyncAuth,
+)
 from dmr.security.jwt.views import (  # noqa: WPS235
+    CookieLogoutAsyncController,
+    CookieLogoutSyncController,
+    CookieObtainTokensAsyncController,
+    CookieObtainTokensSyncController,
+    CookieRefreshTokensAsyncController,
+    CookieRefreshTokensSyncController,
     ObtainTokensAsyncController,
     ObtainTokensPayload,
     ObtainTokensResponse,
@@ -20,6 +34,7 @@ from dmr.security.jwt.views import (  # noqa: WPS235
     VerifyTokenPayload,
     VerifyTokenSyncController,
 )
+from server.common.assertions import check_sensitive_parameters
 
 
 class ObtainAccessAndRefreshSyncController(
@@ -34,6 +49,7 @@ class ObtainAccessAndRefreshSyncController(
         self,
         payload: ObtainTokensPayload,
     ) -> ObtainTokensPayload:
+        check_sensitive_parameters(self.request)
         return payload
 
     @override
@@ -65,10 +81,12 @@ class ObtainAccessAndRefreshAsyncController(
     ],
 ):
     @override
+    @sensitive_variables()
     async def convert_auth_payload(
         self,
         payload: ObtainTokensPayload,
     ) -> ObtainTokensPayload:
+        check_sensitive_parameters(self.request)
         return payload
 
     @override
@@ -102,6 +120,7 @@ class RefreshSyncController(
 ):
     @override
     def convert_refresh_payload(self, payload: RefreshTokenPayload) -> str:
+        check_sensitive_parameters(self.request)
         return payload['refresh_token']
 
     @override
@@ -134,10 +153,12 @@ class RefreshAsyncController(
     ],
 ):
     @override
+    @sensitive_variables()
     async def convert_refresh_payload(
         self,
         payload: RefreshTokenPayload,
     ) -> str:
+        check_sensitive_parameters(self.request)
         return payload['refresh_token']
 
     @override
@@ -170,6 +191,7 @@ class VerifySyncController(
 ):
     @override
     def convert_verify_payload(self, payload: VerifyTokenPayload) -> str:
+        check_sensitive_parameters(self.request)
         return payload['access_token']
 
 
@@ -181,10 +203,12 @@ class VerifyAsyncController(
     ],
 ):
     @override
+    @sensitive_variables()
     async def convert_verify_payload(
         self,
         payload: VerifyTokenPayload,
     ) -> str:
+        check_sensitive_parameters(self.request)
         return payload['access_token']
 
 
@@ -197,7 +221,7 @@ class _UserOutput(pydantic.BaseModel):
 
 @final
 class ControllerWithJWTSyncAuth(Controller[PydanticSerializer]):
-    auth = (JWTSyncAuth(),)
+    auth = (HeaderJWTSyncAuth(),)
 
     def post(self) -> _UserOutput:
         return _UserOutput.model_validate(
@@ -208,10 +232,128 @@ class ControllerWithJWTSyncAuth(Controller[PydanticSerializer]):
 
 @final
 class ControllerWithJWTAsyncAuth(Controller[PydanticSerializer]):
-    auth = (JWTAsyncAuth(),)
+    auth = (HeaderJWTAsyncAuth(),)
 
     async def post(self) -> _UserOutput:
         return _UserOutput.model_validate(
             self.request.user,
             from_attributes=True,
         )
+
+
+@final
+class ControllerWithCookieJWTSyncAuth(Controller[PydanticSerializer]):
+    auth = (CookieJWTSyncAuth(),)
+
+    def get(self) -> _UserOutput:
+        return _UserOutput.model_validate(
+            self.request.user,
+            from_attributes=True,
+        )
+
+
+@final
+class ControllerWithCookieJWTAsyncAuth(Controller[PydanticSerializer]):
+    auth = (CookieJWTAsyncAuth(),)
+
+    async def get(self) -> _UserOutput:
+        return _UserOutput.model_validate(
+            self.request.user,
+            from_attributes=True,
+        )
+
+
+#: Both refresh endpoints are scoped to the sync one on purpose,
+#: so that a single cookie can be replayed against both of them.
+_REFRESH_COOKIE_PATH: Final = reverse_lazy(
+    'api:jwt_auth:jwt_cookie_refresh_sync',
+)
+
+
+@final
+class CookieObtainSyncController(
+    CookieObtainTokensSyncController[
+        PydanticSerializer,
+        ObtainTokensPayload,
+    ],
+):
+    jwt_refresh_cookie_path = _REFRESH_COOKIE_PATH
+
+    @override
+    def convert_auth_payload(
+        self,
+        payload: ObtainTokensPayload,
+    ) -> ObtainTokensPayload:
+        check_sensitive_parameters(self.request)
+        return payload
+
+
+@final
+class CookieObtainAsyncController(
+    CookieObtainTokensAsyncController[
+        PydanticSerializer,
+        ObtainTokensPayload,
+    ],
+):
+    jwt_refresh_cookie_path = _REFRESH_COOKIE_PATH
+
+    @override
+    @sensitive_variables()
+    async def convert_auth_payload(
+        self,
+        payload: ObtainTokensPayload,
+    ) -> ObtainTokensPayload:
+        check_sensitive_parameters(self.request)
+        return payload
+
+
+@final
+class CookieObtainWithBodySyncController(
+    CookieObtainTokensSyncController[
+        PydanticSerializer,
+        ObtainTokensPayload,
+        _UserOutput,
+    ],
+):
+    """Shows that cookie views can still return a response body."""
+
+    response_status_code = HTTPStatus.OK
+    jwt_refresh_cookie_path = _REFRESH_COOKIE_PATH
+
+    @override
+    def convert_auth_payload(
+        self,
+        payload: ObtainTokensPayload,
+    ) -> ObtainTokensPayload:
+        return payload
+
+    @override
+    def make_api_response(self) -> _UserOutput:
+        return _UserOutput.model_validate(
+            self.request.user,
+            from_attributes=True,
+        )
+
+
+@final
+class CookieRefreshSyncController(
+    CookieRefreshTokensSyncController[PydanticSerializer],
+):
+    jwt_refresh_cookie_path = _REFRESH_COOKIE_PATH
+
+
+@final
+class CookieRefreshAsyncController(
+    CookieRefreshTokensAsyncController[PydanticSerializer],
+):
+    jwt_refresh_cookie_path = _REFRESH_COOKIE_PATH
+
+
+@final
+class CookieLogoutSyncView(CookieLogoutSyncController[PydanticSerializer]):
+    jwt_refresh_cookie_path = _REFRESH_COOKIE_PATH
+
+
+@final
+class CookieLogoutAsyncView(CookieLogoutAsyncController[PydanticSerializer]):
+    jwt_refresh_cookie_path = _REFRESH_COOKIE_PATH

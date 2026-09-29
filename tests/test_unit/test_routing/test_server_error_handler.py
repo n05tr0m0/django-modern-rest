@@ -23,7 +23,10 @@ def test_prefix_normalization(
 ) -> None:
     """Ensure that normalizes prefix with or without slashes."""
     view = build_500_handler(prefix, serializer=PydanticSerializer)
-    request = dmr_rf.get('/api/existing/')
+    request = dmr_rf.get(
+        '/api/existing/',
+        headers={'Accept': 'application/json'},
+    )
 
     response = view(request)
 
@@ -79,7 +82,10 @@ def test_renderers_parameter(dmr_rf: DMRRequestFactory) -> None:
 def test_no_accept_uses_default_renderer(dmr_rf: DMRRequestFactory) -> None:
     """Ensure that missing Accept header uses first configured renderer."""
     view = build_500_handler('api/', serializer=PydanticSerializer)
-    request = dmr_rf.get('/api/existing/', headers={'Accept': None})
+    request = dmr_rf.get(
+        '/api/existing/',
+        headers={'Accept': None},  # type: ignore[dict-item]
+    )
 
     response = view(request)
 
